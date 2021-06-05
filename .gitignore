@@ -1,0 +1,7 @@
+/data
+/result
+
+__pychache__
+
+*.pyc
+*.mp4
