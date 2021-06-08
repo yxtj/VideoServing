@@ -6,6 +6,8 @@ import numpy as np
 import torch
 
 from app.rangechecker import RangeChecker
+from framepreprocess import  FramePreprocessor
+from models.framedecision import FrameProcessorModel
 
 from videoholder import VideoHolder
 from track import centroidtracker
@@ -91,17 +93,21 @@ class FeatureExtractor():
 
 class CarCounter():
     
-    def __init__(self, video:VideoHolder, rng:RangeChecker,
-                 dmodel, rs0, fr0, disappear_time:float=0.5,
-                 cmodel=None, feat_gen=None,
+    def __init__(self, video:VideoHolder, rng:RangeChecker, fpp:FramePreprocessor,
+                 dmodel, rs0, fr0, # detect
+                 fmodel:FrameProcessorModel=None, # frame difference
+                 disappear_time:float=0.8, # track
+                 cmodel=None, feat_gen=None, # resolution-framerate config
                  rs_list=None, fr_list=None,
                  pboxes_list=None, times_list=None
                  ):
         self.video = video
         self.range = rng
+        self.fpp = fpp
         self.dmodel = dmodel
         self.rs = rs0
         self.fr = fr0
+        self.fmodel = fmodel
         self.cmodel = cmodel
         self.feat_gen = feat_gen
         self.dsap_time = disappear_time

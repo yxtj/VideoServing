@@ -8,7 +8,7 @@ import time
 import visualization
 import videoholder
 
-import yolowrapper
+from detect.yolowrapper import yolowrapper
 import carcount
 
 
