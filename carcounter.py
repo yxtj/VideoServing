@@ -6,8 +6,6 @@ import numpy as np
 import torch
 
 from app.rangechecker import RangeChecker
-from framepreprocess import  FramePreprocessor
-from models.framedecision import FrameProcessorModel
 
 from videoholder import VideoHolder
 from track import centroidtracker
@@ -93,21 +91,18 @@ class FeatureExtractor():
 
 class CarCounter():
     
-    def __init__(self, video:VideoHolder, rng:RangeChecker, fpp:FramePreprocessor,
+    def __init__(self, video:VideoHolder, rng:RangeChecker,
                  dmodel, rs0, fr0, # detect
-                 fmodel:FrameProcessorModel=None, # frame difference
                  disappear_time:float=0.8, # track
-                 cmodel=None, feat_gen=None, # resolution-framerate config
+                 cmodel=None, feat_gen:FeatureExtractor=None, # resolution-framerate config
                  rs_list=None, fr_list=None,
                  pboxes_list=None, times_list=None
                  ):
         self.video = video
         self.range = rng
-        self.fpp = fpp
         self.dmodel = dmodel
         self.rs = rs0
         self.fr = fr0
-        self.fmodel = fmodel
         self.cmodel = cmodel
         self.feat_gen = feat_gen
         self.dsap_time = disappear_time
@@ -177,11 +172,15 @@ class CarCounter():
     def update(self, fidx):
         frame = self.video.get_frame(fidx)
         if self.pboxes_list is None:
+            t1 = time.time()
             boxes = self.recognize_cars(frame)
+            t1 = time.time() - t1
         else:
             # use pre-computed result
             rs_idx = self.rs_list.index(self.rs)
             boxes = self.pboxes_list[rs_idx][fidx]
+            t1 = self.times_list[rs_idx][fidx]
+        t2 = time.time()
         centers = box_center(boxes)
         # filter cars far from the checking line
         if len(centers) > 0:
@@ -194,29 +193,42 @@ class CarCounter():
         if self.feat_gen is not None:
             self.feat_gen.update(objects)
         c = self.count(fidx, objects)
-        return c
+        t2 = time.time() - t2
+        return c, t1 + t2
     
     def process_one_second(self, rs, fr):
         cnt = 0
-        t = 0.0
+        t1 = time.time()
         self.change_rs(rs)
         self.change_fr(fr)
         fidx = int(self.sidx * self.video.fps)
         end_fidx = int((self.sidx+1) * self.video.fps)
+        t1 = time.time() - t1
+        t2 = 0.0
         while fidx < end_fidx:
-            cnt += self.update(fidx)
+            c, t = self.update(fidx)
+            cnt += c
+            t2 += t
             fidx += fr
         if self.feat_gen is not None:
+            t3 = time.time()
             self.feat_gen.move(cnt, (rs, fr))
-        t = time.time() - t
-        return cnt, t
+            t3 = time.time() - t3
+        else:
+            t3 = 0.0
+        return cnt, t1 + t2 + t3
 
-    def process(self):
-        n_second = self.video.length_second(True)
+    def process(self, start_second=0, n_second=None):
+        n = self.video.length_second(True)
+        if n_second is None:
+            n_second = n - start_second
+        else:
+            n_second = min(n_second, n-start_second)
         times = np.zeros(n_second, float)
         counts = np.zeros(n_second, int)
         confs = np.zeros((n_second, 2), int)
-        for i in range(n_second):
+        for i in range(start_second, start_second+n_second):
+            self.sidx = i
             cnt, t = self.process_one_second(self.rs, self.fr)
             if self.cmodel is not None:
                 tt = time.time()
@@ -225,9 +237,9 @@ class CarCounter():
                 self.rs = rs
                 self.fr = fr
                 t += time.time() - tt
-            self.times[i] = t
-            self.counts[i] = cnt
-            self.confs[i] = (self.rs, self.fr)
+            times[i] = t
+            counts[i] = cnt
+            confs[i] = (self.rs, self.fr)
         return times, counts, confs
     
     
