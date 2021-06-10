@@ -4,14 +4,12 @@ import torch
 import cv2
 import numpy as np
 import time
-import re
 import matplotlib.pyplot as plt
 
 import videoholder
 #import operation
 
-import yolowrapper
-import carcount
+import carcounter
 
 
 # %% configures
@@ -51,7 +49,7 @@ def generate_conf(cc, video, pbox_files, ground_truth,
         cc.change_rs(rs)
         pbfile = pbox_files[i]
                             
-        data = carcount.load_raw_data(pbfile)
+        data = carcounter.load_precompute_data(pbfile)
         ptimes = data[3]
         pboxes = data[4]
         cc.conf.rs = rs
@@ -309,16 +307,16 @@ def show_delay_usage(loads, delay, usage, bound,
 # %% test
 
 def __test_show_profile__():
+    import detect.yolowrapper as yolowrapper
     
     v1=videoholder.VideoHolder('E:/Data/video/s3.mp4')
-    rng=carcount.CheckRange('h',0.5,0.1,0.08)
+    rng=carcounter.CheckRange('h',0.5,0.1,0.08)
     model=yolowrapper.YOLO_torch('yolov5s',0.5,(2,3,5,7))
-    conf=carcount.Configuation(1,480,model)
     
     fps = int(v1.fps)
     # fps = 25
     
-    cc=carcount.CarCounter(v1,rng,conf)
+    cc=carcounter.CarCounter(v1,rng,model,480,1)
     box_files = ['data/s3-raw-%d.npz'%r for r in RS]
     segment_length = 5
     
