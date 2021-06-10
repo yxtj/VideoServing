@@ -60,32 +60,11 @@ class FramePreprocessor():
         self.bg_subtractor.clear()
         if self.methodDiff:
             self.frame_history = [None for _ in range(self.diff_num)]
+            self.frame_init = False
     
     def option_remove_background(self, on_off: bool):
         self.removeBG = on_off
-    
-    # mask - background-difference
-    
-    def _get_mask_bg_(self, frame):
-        mask = self.bg_subtractor.apply(frame, self.bg_lr)
-        #_, mask = cv2.threshold(mask, 40, 255, cv2.THRESH_BINARY)
-        return mask
-    
-    def _update_frame_history_(self, frame):
-        gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
-        if self.frame_init == True:
-            self.frame_history[:self.diff_num-1] = self.frame_history[1:self.diff_num]
-            self.frame_history[self.diff_num-1] = gray
-        else:
-            self.frame_init = True
-            self.frame_history = [gray for _ in range(self.diff_num)]
-    
-    # mask - consecutive-frame-difference
-    
-    def _get_mask_diff_(self, frame):
-        mask = FramePreprocessor.frame_diff(self.frame_history, self.method_agg_fun)
-        return mask
-    
+        
     # main API
     
     def apply(self, frame):
@@ -166,6 +145,28 @@ class FramePreprocessor():
         color_mask = cv2.cvtColor(gray_mask, cv2.COLOR_GRAY2BGR)
         f = color_mask & frame
         return f
+    
+    # mask - background-difference
+    
+    def _get_mask_bg_(self, frame):
+        mask = self.bg_subtractor.apply(frame, self.bg_lr)
+        #_, mask = cv2.threshold(mask, 40, 255, cv2.THRESH_BINARY)
+        return mask
+    
+    def _update_frame_history_(self, frame):
+        gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+        if self.frame_init == True:
+            self.frame_history[:self.diff_num-1] = self.frame_history[1:self.diff_num]
+            self.frame_history[self.diff_num-1] = gray
+        else:
+            self.frame_init = True
+            self.frame_history = [gray for _ in range(self.diff_num)]
+    
+    # mask - consecutive-frame-difference
+    
+    def _get_mask_diff_(self, frame):
+        mask = FramePreprocessor.frame_diff(self.frame_history, self.method_agg_fun)
+        return mask
     
     @staticmethod
     def frame_diff(gray_frame_list, merge_fun):
