@@ -182,17 +182,18 @@ class CarCounter():
             t1 = self.times_list[rs_idx][fidx]
         t2 = time.time()
         centers = box_center(boxes)
-        # filter cars far from the checking line
+        # filter cars that are far from the checking line
         if len(centers) > 0:
             flag = self.range.in_track(centers)
             centers_in_range = centers[flag]
         else:
             centers_in_range = []
+        return centers_in_range
         # count cars
         objects = self.tracker.update(centers_in_range)
+        c = self.count(fidx, objects)
         if self.feat_gen is not None:
             self.feat_gen.update(objects)
-        c = self.count(fidx, objects)
         t2 = time.time() - t2
         return c, t1 + t2
     
@@ -245,7 +246,7 @@ class CarCounter():
     
     ##########
     
-    def raw_profile(self, idx_start=0, idx_end=None, show_progress=None):
+    def precompute(self, idx_start=0, idx_end=None, show_progress=None):
         assert idx_start < self.video.num_frame
         if idx_end is None:
             idx_end = self.video.num_frame
@@ -353,3 +354,89 @@ class CarCounter():
         times = self.group_to_segments(times, segment)
         #times = times[:n_segment*segment].reshape((n_segment, segment)).sum(1)
         return times, accuracy
+
+
+# %% precomputed data io
+    
+def save_precompute_data(file, rng_param, model_param, width, times, boxes):
+    np.savez(file, rng_param=np.array(rng_param,object), 
+             model_param=np.array(model_param, object),
+             width=width, times=times, boxes=np.array(boxes, object))
+    
+def load_precompute_data(file):
+    with np.load(file, allow_pickle=True) as data:
+        rng_param = data['rng_param'].tolist()
+        model_param = data['model_param'].tolist()
+        width = data['width'].item()
+        times = data['times']
+        boxes = data['boxes'].tolist()
+        return rng_param, model_param, width, times, boxes
+
+#%% test
+
+def __test_FasterRCNN__():
+    import torchvision
+    import operation
+    
+    class MC_FRCNN:
+        def __init__(self, model, min_score, target_labels=None):
+            model.eval()
+            self.model = model
+            self.min_score = min_score
+            self.target_labels = target_labels
+            
+        def filter(self, labels, scores, boxes):
+            if self.target_labels is None:
+                idx = scores > self.min_score
+            else:
+                idx = [s>self.min_score and l in self.target_labels 
+                       for l,s in zip(labels, scores)]
+            return labels[idx], scores[idx], boxes[idx]
+        
+        def process(self, frame, width):
+            with torch.no_grad():
+                pred = self.model(frame.unsqueeze(0))
+            lbls = pred[0]['labels'].cpu().numpy()
+            scores = pred[0]['scores'].cpu().numpy()
+            boxes = pred[0]['boxes'].cpu().numpy()
+            lbls, scores, boxes = self.filter(lbls, scores, boxes)
+            return lbls, scores, boxes
+        
+    model = torchvision.models.detection.fasterrcnn_resnet50_fpn(True)
+    model = MC_FRCNN(model, 0.7, (3,4,6,8))
+    
+    v1 = VideoHolder('E:/Data/video/s3.mp4',operation.OptTransOCV2Torch())
+    rng = RangeChecker('h', 0.5, 0.1)
+    
+    cc = CarCounter(v1, rng, model, None, 5)
+    times, counts = cc.process()
+    np.savez('E:/Data/video/s3-profile.npz', times=times, counts=counts)
+
+def __test_yolo__():
+    import yolowrapper
+    model = yolowrapper.YOLO_torch('yolov5s', 0.5, (2,3,5,7))
+    
+    v1 = VideoHolder('E:/Data/video/s3.mp4')
+    rng = RangeChecker('h', 0.5, 0.1)
+    
+    cc = CarCounter(v1, rng, model, None, 5)
+    ptimes, pboxes = cc.raw_profile(show_progress=100)
+    
+    np.savez('data/s3-raw-480', rng_param=np.array(('h',0.5,0.1),object), 
+             model_param=np.array(('yolov5s',0.5,(2,3,4,7)), object),
+             width=480, times=ptimes, boxes=pboxes)
+
+def __test_conf__():
+    v3=VideoHolder('E:/Data/video/s3.mp4')
+    rng3=RangeChecker('h', 0.5, 0.1)
+    
+    v4=VideoHolder('E:/Data/video/s4.mp4')
+    rng4=RangeChecker('h', 0.5, 0.1)
+    
+    v5=VideoHolder('E:/Data/video/s5.mp4')
+    rng5=RangeChecker('v', 0.75, 0.2, 0.1)
+    
+    v7=VideoHolder('E:/Data/video/s7.mp4')
+    rng7=RangeChecker('h', 0.45, 0.2, 0.1)
+    
+    
