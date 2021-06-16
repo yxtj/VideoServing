@@ -55,7 +55,7 @@ class YOLO_torch(DetectorBase):
     
     def process(self, frame, psize=640, conf_threshold=None):
         # <frame> is a np.ndarray of 3D: [H, W, C] where C=3
-        # <psize> is int of gain size
+        # <psize> is an int of the maximum of H and W
         if conf_threshold is None:
             conf_threshold = self.conf_threshold
         img = Image.fromarray(frame)
