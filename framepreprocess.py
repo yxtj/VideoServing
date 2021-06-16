@@ -139,6 +139,8 @@ class FramePreprocessor():
         for i,j in zip(range(y1//gh, y2//gh), range(x1//gw, x2//gw)):
             if  heat_map[i,j] >= self.grid_threshold:
                 new_mask[i*gh:(i+1)*gh, j*gw:(j+1)*gw] = 255
+        if (x1, y1, x2, y2) == (W, H, 0, 0):
+            x1, y1 = 0, 0
         return x1, y1, x2, y2, new_mask
 
     def remove_back_ground(self, frame, gray_mask):
