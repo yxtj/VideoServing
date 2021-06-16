@@ -24,6 +24,14 @@ class CentroidTracker():
         self.objects = OrderedDict()
         self.disappeared = OrderedDict()
         
+    def get_state(self):
+        return self.nextObjectID, self.objects.copy(), self.disappeared.copy()
+    
+    def set_state(self, state):
+        self.nextObjectID = state[0]
+        self.objects = state[1]
+        self.disappeared = state[2]
+        
     def register(self, centroid):
         # when registering an object we use the next available object
         # ID to store the centroid
