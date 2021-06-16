@@ -3,7 +3,6 @@
 import time
 
 import numpy as np
-import torch
 
 from app.rangechecker import RangeChecker
 from framepreprocess import  FramePreprocessor
@@ -40,19 +39,23 @@ class FeatureExtractor():
     def __init__(self, dim_conf=2, num_prev=2, decay=1):
         self.dim_conf = dim_conf
         self.dim_speed = 3 # average/median/std of speed
-        self.dim_unit = self.dim_speed + 1 + dim_conf # speed, count, confs
-        self.dim_feat = num_prev*self.dim_unit + self.dim_speed
+        self.dim_size = 4
+        self.dim_unit = self.dim_speed + self.dim_size + 1 + dim_conf # speed, size, count, confs
+        self.dim_feat = num_prev*self.dim_unit #+ self.dim_speed
         self.num_prev = num_prev
         self.decay = decay
         # running time data
-        self.feature = torch.zeros(self.dim_feat)
+        self.feature = np.zeros(self.dim_feat)
         self.buffer = {} # last location for speed
-        self.temp = [] # speed of 
+        self.stemp = [] # speed of current segment
+        self.size_hist = np.zeros(2)
+        self.zbtemp = [] # bounging box size of current segment
+        self.zatemp = [] # active area size of current segment
     
     def reset(self):
-        self.feature = torch.zeros(self.dim_feat)
+        self.feature = np.zeros(self.dim_feat)
         self.buffer = {}
-        self.temp = []
+        self.stemp = []
     
     def update(self, objects, bsize, asize):
         speeds = []
@@ -64,31 +67,52 @@ class FeatureExtractor():
                 self.buffer[oid] = c
             else:
                 self.buffer[oid] = c
-        self.temp.extend(speeds)
+        self.stemp.extend(speeds)
+        self.size_hist = self.size_hist*0.2 + (1-0.2)*np.array([bsize, asize])
+        self.zbtemp.append(bsize)
+        self.zatemp.append(asize)
     
     def move(self, cnt, conf):
-        n = self.dim_unit * self.num_prev
+        off = self.dim_unit * (self.num_prev - 1)
+        # move existing slots
         if self.num_prev > 0:
-            self.feature[:n] = self.feature[self.dim_speed:]
+            self.feature[:-self.dim_unit] = self.feature[self.dim_unit:]
             if self.decay != 1:
                 # decay the speed
                 for i in range(self.num_prev):
                     a = i*self.dim_unit
                     b = a+self.dim_speed
                     self.feature[a:b] *= self.decay
-        self.feature[n - self.dim_conf : n] = conf
-        if len(self.temp) == 0:
+        # put current buffer into feature
+        if len(self.stemp) == 0:
             sa = sm = ss = 0.0
         else:
-            sa = np.mean(self.temp)
-            sm = np.median(self.temp)
-            ss = np.std(self.temp)
-        f = torch.tensor([sa, sm, ss, cnt, *conf]).float()
+            sa = np.mean(self.stemp)
+            sm = np.median(self.stemp)
+            ss = np.std(self.stemp)
+        zb = np.mean(self.zbtemp)
+        za = np.mean(self.zatemp)
+        f = np.array([sa, sm, ss, zb, za, *self.size_hist, cnt, *conf])
         #f = (f - self.feat_mean)/self.feat_std
-        self.feature[n:] = f
+        self.feature[off:] = f
         
-    def get(self):
-        return self.feature
+    def get(self, frame_level=False):
+        if not frame_level:
+            return self.feature
+        else:
+            if len(self.stemp) == 0:
+                sa = sm = ss = 0.0
+            else:
+                sa = np.mean(self.stemp)
+                sm = np.median(self.stemp)
+                ss = np.std(self.stemp)
+            zb = np.mean(self.zbtemp)
+            za = np.mean(self.zatemp)
+            f = self.feature.clone()
+            off = self.dim_unit * (self.num_prev - 1)
+            oend = off+self.dim_speed+self.dim_size
+            f[off:oend] = np.array([sa, sm, ss, zb, za, *self.size_hist])
+            return f
                 
 
 class CarCounter():
@@ -99,12 +123,14 @@ class CarCounter():
                  fpp:FramePreprocessor=None, fmodel:DecisionModel=None, # frame decision
                  feat_gen:FeatureExtractor=None, # feature
                  rs_list=None, fr_list=None,
-                 pboxes_list=None, times_list=None
+                 pboxes_list=None, times_list=None,
+                 bsize_list=None, asize_list=None
                  ):
         self.video = video
         self.range = rng
         self.dmodel = dmodel
         self.rs = rs0
+        self.rscale = rs0 / max(video.width, video.height) if rs0 else 1
         self.fr = fr0
         self.feat_gen = feat_gen
         self.dsap_time = disappear_time
@@ -119,10 +145,17 @@ class CarCounter():
         # pre-computed result
         self.rs_list = rs_list
         self.fr_list = fr_list
-        assert pboxes_list is None or len(pboxes_list) == len(rs_list)
         self.pboxes_list = pboxes_list
-        assert times_list is None or len(times_list) == len(rs_list)
         self.times_list = times_list
+        if rs_list is not None:
+            assert pboxes_list is None or len(pboxes_list) == len(rs_list)
+            assert times_list is None or len(times_list) == len(rs_list)
+        else:
+            assert pboxes_list is None or pboxes_list.ndim == 1
+            assert times_list is None or times_list.ndim == 1
+            assert pboxes_list is None and times_list is None or pboxes_list.shape == times_list.shape
+        self.bsize_list = bsize_list
+        self.asize_list = asize_list
         # running time data
         self.obj_info = {} # objectID -> CarRecord(dir, over)
         self.sidx = 0 # second id
@@ -135,6 +168,10 @@ class CarCounter():
     
     def change_rs(self, rs):
         self.rs = rs
+        if rs is not None:
+            self.rscale = rs / max(self.video.width, self.video.height)
+        else:
+            self.rscale = 1
         
     def reset(self):
         self.tracker.reset()
@@ -145,9 +182,16 @@ class CarCounter():
         self.obj_info = {}
         self.sidx = 0
         
-    def recognize_cars(self, frame):
-        if self.rs is not None:
-            lbls, scores, boxes = self.dmodel.process(frame, self.rs)
+    def get_track_state(self):
+        return self.tracker.get_state(), self.obj_info.copy()
+    
+    def set_track_state(self, state):
+        self.tracker.set_state(state[0])
+        self.obj_info = state[1]
+        
+    def recognize_cars(self, frame, rs=None):
+        if rs is not None:
+            lbls, scores, boxes = self.dmodel.process(frame, rs)
         else:
             lbls, scores, boxes = self.dmodel.process(frame)
         return boxes
@@ -178,34 +222,56 @@ class CarCounter():
         for oid in to_remove:
             del self.obj_info[oid]
    
-    def update(self, fidx):
-        # part 1: get object boxes from image
-        frame = self.video.get_frame(fidx)
+    def __get_boxes__(self, fidx, rs, m_diff=False):
         if self.pboxes_list is None:
+            # process online
             t1 = time.time()
-            boxes = self.recognize_cars(frame)
+            frame = self.video.get_frame(fidx)
+            if m_diff and self.fpp is not None:
+                rect, f, mask = self.fpp.apply(frame)
+                w, h = rect[2]-rect[0], rect[3]-rect[1]
+                if f.size != 0:
+                    sz = max(w, h)
+                    sz = int(sz*self.rscale) if self.rs else sz
+                    boxes = self.recognize_cars(f, sz)
+                    bsize, asize = w*h/np.prod(frame.shape), mask.mean()/255
+                else:
+                    boxes = np.zeros((0,4))
+                    bsize, asize = 0, 0
+            else:
+                boxes = self.recognize_cars(frame, rs)
             t1 = time.time() - t1
-        else:
-            # use pre-computed result
-            rs_idx = self.rs_list.index(self.rs)
+        elif self.rs_list is not None:
+            # use pre-computed result (resolution-frame)
+            rs_idx = self.rs_list.index(rs)
             boxes = self.pboxes_list[rs_idx][fidx]
+            bsize, asize = 1, 1
             t1 = self.times_list[rs_idx][fidx]
+        else:
+            # use pre-compuated result (frame)
+            boxes = self.pboxes_list[fidx]
+            t1 = self.times_list[fidx]
+            bsize, asize = self.bsize_list[fidx], self.asize_list[fidx]
+        return t1, boxes, bsize, asize
+   
+    def update(self, fidx, rs, m_diff=False):
+        # part 1: get object boxes from image
+        t1, boxes, bsize, asize = self.__get_boxes__(fidx, rs, m_diff)
         # part 2: get counting from boxes (filtering, tracking, checking)
         t2 = time.time()
-        centers = box_center(boxes)
         # filter cars that are far from the checking line
-        if len(centers) > 0:
+        if len(boxes) > 0:
+            centers = box_center(boxes)
             flag = self.range.in_track(centers)
             centers_in_range = centers[flag]
         else:
             centers_in_range = []
-        return centers_in_range
         # count cars
         objects = self.tracker.update(centers_in_range)
         c = self.count(fidx, objects)
         # part 3: generate features
         if self.feat_gen is not None:
-            self.feat_gen.update(objects)
+            self.feat_gen.update(objects, bsize, asize)
         t2 = time.time() - t2
         return c, t1 + t2
     
@@ -219,17 +285,22 @@ class CarCounter():
         t1 = time.time() - t1
         t2 = 0.0
         while fidx < end_fidx:
-            c, t = self.update(fidx)
+            c, t = self.update(fidx, rs)
             cnt += c
             t2 += t
             fidx += fr
-        if self.feat_gen is not None:
-            t3 = time.time()
-            self.feat_gen.move(cnt, (rs, fr))
-            t3 = time.time() - t3
-        else:
-            t3 = 0.0
-        return cnt, t1 + t2 + t3
+        return cnt, t1 + t2
+    
+    def process_period(self, fidx_start, fidx_end, rs, fr):
+        cnt = 0
+        self.change_rs(rs)
+        self.change_fr(fr)
+        tt = 0.0
+        for fidx in range(fidx_start, fidx_end, fr):
+            c, t = self.update(fidx, rs)
+            cnt += c
+            tt += t
+        return cnt, tt
 
     def process(self, start_second=0, n_second=None):
         n = self.video.length_second(True)
@@ -243,7 +314,13 @@ class CarCounter():
         for i in range(start_second, start_second+n_second):
             self.sidx = i
             cnt, t = self.process_one_second(self.rs, self.fr)
+            if self.feat_gen is not None:
+                # update feature
+                tt = time.time()
+                self.feat_gen.move(cnt, (self.rs, self.fr))
+                t+= time.time() - tt
             if self.cmodel is not None:
+                # predict next configuration
                 tt = time.time()
                 feature = self.feat_gen.get()
                 rs, fr = self.cmodel(feature)
@@ -272,7 +349,7 @@ class CarCounter():
             t = time.time()
             
             f = self.video.get_frame(idx)
-            boxes = self.recognize_cars(f)
+            boxes = self.recognize_cars(f, self.rs)
             if filtering and len(boxes) > 0:
                 centers = box_center(boxes)
                 flag = self.range.in_track(centers)
@@ -298,18 +375,23 @@ class CarCounter():
         if idx_end is None:
             idx_end = self.video.num_frame
         assert idx_start <= idx_end <= self.video.num_frame
-        print(idx_start, idx_end)
-        n = (idx_end - idx_start) // fr
+        n = (idx_end - idx_start + fr - 1) // fr
+        print(idx_start, idx_end, n)
         res_times = np.zeros(n)
         res_boxes = [None for _ in range(n)]
+        res_rect = np.zeros((n,4), dtype=int)
+        res_mask_size = np.zeros(n)
         i = 0
         for idx in range(idx_start, idx_end, fr):
             t = time.time()
             
             frame = self.video.get_frame(idx)
             rect, f, mask = self.fpp.apply(frame)
+            w, h = rect[2]-rect[0], rect[3]-rect[1]
             if f.size != 0:
-                boxes = self.recognize_cars(f)
+                sz = max(w, h)
+                sz = int(sz*self.rscale) if self.rs else sz
+                boxes = self.recognize_cars(f, sz)
             else:
                 boxes = np.zeros((0,4))
             if filtering and len(boxes) > 0:
@@ -320,13 +402,15 @@ class CarCounter():
             t = time.time() - t
             res_times[i] = t
             res_boxes[i] = boxes
+            res_rect[i] = rect
+            res_mask_size[i] = mask.mean()/255
             i += 1
             if show_progress is not None and i % show_progress == 0:
                 speed = 1.0/res_times[i-show_progress:i].mean()
                 eta = (n - i) / speed
                 print('idx %d: total-time(s): %f, speed(fps): %f, eta: %d:%d' %
                       (idx, res_times[:i].sum(), speed, eta//60, eta%60))
-        return res_times, res_boxes
+        return res_times, res_boxes, res_rect, res_mask_size
     
     def count_with_raw_boxes(self, boxes, fr=None):
         fps = int(np.ceil(self.video.fps))
@@ -410,14 +494,17 @@ class CarCounter():
 
 # %% precomputed data io
     
-def save_precompute_data(file, rng_param, model_param, fpp_param,
-                         width, fr, times, boxes):
+def save_precompute_data_diff(file, rng_param, model_param, fpp_param,
+                              width, fr, times, boxes, rects, mask_size):
     np.savez(file, rng_param=np.array(rng_param,object), 
              model_param=np.array(model_param, object),
              fpp_param=np.array(fpp_param, object),
-             width=width, fr=fr, times=times, boxes=np.array(boxes, object))
+             width=width, fr=fr, 
+             times=times, boxes=np.array(boxes, object),
+             rects=rects, mask_size=mask_size
+             )
     
-def load_precompute_data(file):
+def load_precompute_data_diff(file):
     with np.load(file, allow_pickle=True) as data:
         rng_param = data['rng_param'].tolist()
         model_param = data['model_param'].tolist()
@@ -426,7 +513,9 @@ def load_precompute_data(file):
         fr = data['fr'].item()
         times = data['times']
         boxes = data['boxes'].tolist()
-        return rng_param, model_param, fpp_param, width, fr, times, boxes
+        rects = data['rects']
+        mask_size = data['mask_size']
+        return rng_param, model_param, fpp_param, width, fr, times, boxes, rects, mask_size
 
 # %% test
 
@@ -443,3 +532,22 @@ def __test_conf__():
     v7=VideoHolder('E:/Data/video/s7.mp4')
     rng7=RangeChecker('h', 0.45, 0.2, 0.1)
     
+    fps_list = [25,30,20,30]
+    fr_list=[1,2,5,15,30]
+    
+    import framepreprocess
+    import detect.yolowrapper
+    fpp=framepreprocess.FramePreprocessor()
+    dmodel=detect.yolowrapper.YOLO_torch('yolov5s',0.5,(2,3,5,6,7))
+    cc=CarCounter(v4,rng4,dmodel,None,2,0.8,fpp)
+    
+    for fr in fr_list:
+        print(fr)
+        cc.reset()
+        tl,bl,rl,ml=cc.precompute_frame_difference(fr,show_progress=200)
+        save_precompute_data_diff(
+            'data/s4/s4-diff-raw-%d'% fr,['h', 0.5, 0.2, 0.1],
+            ['yolov5s',0.5,(2,3,5,6,7)],
+            [True,True,'max',True,True,100,2,10,5,5,0.002,0.2,3],
+            None,fr,tl,bl,rl,ml)
+        

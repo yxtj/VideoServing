@@ -188,7 +188,6 @@ class CarCounter():
             centers_in_range = centers[flag]
         else:
             centers_in_range = []
-        return centers_in_range
         # count cars
         objects = self.tracker.update(centers_in_range)
         c = self.count(fidx, objects)
