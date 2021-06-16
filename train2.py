@@ -10,6 +10,18 @@ from track.centroidtracker import CentroidTracker
 from util import box_center
 from carcounter2 import FeatureExtractor
 
+# %% prepare training data - load and align raw data
+
+def pick_precomputed_diff_files(folder, prefix, max_jump, sort=True):
+    dfiles = list(filter(lambda fn: fn.startswith(prefix) and
+                         fn.endswith('.npz'), os.listdir(folder)))
+    ptn = prefix+'-?(\d+)\.npz'
+    dmap = { int(re.match(ptn, fn)[1]): fn for fn in dfiles }
+    keys = filter(lambda k: k<=max_jump, dmap)
+    if sort:
+        keys = sorted(keys)
+    dfiles = [ dmap[k] for k in keys ]
+    return dfiles
 
 def organize_diff_data(folder, file_list, nfrm, max_jump):
     nfiles = len(file_list)
@@ -55,58 +67,35 @@ def get_aligned_point(idx, wtime_list, wbox_list,
                 break
     return res_time, res_box
 
-
-def pick_precomputed_diff_files(folder, prefix, max_jump, sort=True):
-    dfiles = list(filter(lambda fn: fn.startswith(prefix) and
-                         fn.endswith('.npz'), os.listdir(folder)))
-    ptn = prefix+'-?(\d+)\.npz'
-    dmap = { int(re.match(ptn, fn)[1]): fn for fn in dfiles }
-    keys = filter(lambda k: k<=max_jump, dmap)
-    if sort:
-        keys = sorted(keys)
-    dfiles = [ dmap[k] for k in keys ]
-    return dfiles
-
-# prepare training data
-def align_precomputed_data(folder, whole_proc_file, diff_proc_prefix, max_jump):
-    assert os.path.isfile(folder+'/'+whole_proc_file)
-    dfiles = pick_precomputed_diff_files(folder, diff_proc_prefix, max_jump)
-    #print(dfiles)
-    ndfile = len(dfiles)
-    assert len(dfiles) != 0
-    wdata = load_precompute_data(folder+'/'+whole_proc_file)
-    wtime_list = wdata[3]
-    wbox_list = np.array(wdata[4], dtype=object)
-    nfrm = len(wbox_list)
-    fr_list, dtime_list, dbox_list, bsize_list, asize_list = \
-        organize_diff_data(folder, dfiles, nfrm, max_jump)
-    # generate data
-    end = nfrm-max_jump
-    res_time = np.zeros((end, ndfile, 2))
-    res_box = np.array([[(None,None) for _ in range(ndfile)] for _ in range(end)], dtype=object)
+def align_precomputed_data(n, ndfile, fr_list,
+                           wtime_list, wbox_list, dtime_list, dbox_list):
+    assert dtime_list.shape[1] == ndfile
+    res_time = np.zeros((n, ndfile, 2))
+    res_box = np.array([[(None,None) for _ in range(ndfile)] for _ in range(n)], dtype=object)
     for i, fr in enumerate(fr_list):
-        rng = np.arange(0,end,fr)
+        rng = np.arange(0,n,fr)
         res_time[rng,i,0] = wtime_list[rng]
         res_box[rng,i,0] = wbox_list[rng]
-    res_time[:,:,1] = dtime_list[:end,:]
-    res_box[:,:,1] = dbox_list[:end,:]
-    return fr_list, res_time, res_box, bsize_list[:end], asize_list[:end]
-
-    #res_time = np.zeros((end, ndfile, 2))
-    #res_box = np.array([[(None,None) for _ in range(ndfile)] for _ in range(end)], dtype=object)
-    #for idx in range(end):
+    res_time[:,:,1] = dtime_list[:n]
+    res_box[:,:,1] = dbox_list[:n]
+    return res_time, res_box
+    #res_time = np.zeros((n, ndfile, 2))
+    #res_box = np.array([[(None,None) for _ in range(ndfile)] for _ in range(n)], dtype=object)
+    #for idx in range(n):
     #    atl, abl = get_aligned_point(idx, wtime_list, wbox_list,
     #                                 fr_list, dtime_list, dbox_list, max_jump)
     #    res_time[idx] = atl
     #    res_box[idx] = abl
     #return fr_list, res_time, res_box
 
+# %% prepare training data - configuration
+
 def __compute_accuracy__(target, predict):
     up = max(target, predict)
     down = min(target, predict)
     return down/up if up != 0 else 1.0
     
-
+# return configuration index (in fr_list), time and accuracy
 def select_configuration(cc, acc_bound, time_list, box_list,
                          fr_list, ground_truth):
     assert time_list.shape == box_list.shape
@@ -165,23 +154,7 @@ def select_configuration(cc, acc_bound, time_list, box_list,
         state = state_buff[x][y]
     return res_conf, res_time, res_acc
     
-
-def prepare_training_date(folder, whole_proc_file, diff_proc_prefix, max_jump):
-    assert os.path.isfile(folder+'/'+whole_proc_file)
-    dfiles = pick_precomputed_diff_files(folder, diff_proc_prefix, max_jump)
-    #print(dfiles)
-    ndfile = len(dfiles)
-    assert len(dfiles) != 0
-    # load data
-    wdata = load_precompute_data(folder+'/'+whole_proc_file)
-    wtime_list = wdata[3]
-    wbox_list = np.array(wdata[4], dtype=object)
-    nfrm = len(wbox_list)
-    fr_list, dtime_list, dbox_list, bsize_list, asize_list = \
-        organize_diff_data(folder, dfiles, nfrm, max_jump)
-    # align difference data with frame
-    
-
+# %% prepare training data - feature
 
 def get_feature(cc, fr_list, time_list, box_list, bsize_list, asize_list,
                 conf_list, ground_truth):
@@ -229,7 +202,39 @@ def get_feature(cc, fr_list, time_list, box_list, bsize_list, asize_list,
         feat_gen.move(ground_truth[sidx], (fr, mi))
         feature[sidx] = cc.feat_gen.get()
     return feature
-    
+
+# %% prepare training data
+
+def prepare_training_date(cc, folder,
+                          whole_proc_file, diff_proc_prefix, gtruth_file,
+                          max_jump, acc_bound):
+    assert os.path.isfile(folder+'/'+whole_proc_file)
+    dfiles = pick_precomputed_diff_files(folder, diff_proc_prefix, max_jump)
+    #print(dfiles)
+    ndfile = len(dfiles)
+    assert len(dfiles) != 0
+    # part 1: load data
+    wdata = load_precompute_data(folder+'/'+whole_proc_file)
+    wtime_list = wdata[3]
+    wbox_list = np.array(wdata[4], dtype=object)
+    nfrm = len(wbox_list)
+    fr_list, dtime_list, dbox_list, bsize_list, asize_list = \
+        organize_diff_data(folder, dfiles, nfrm, max_jump)
+    # part 2: align difference data with frame
+    n = nfrm-max_jump
+    time_list, box_list = align_precomputed_data(
+        n, ndfile, fr_list, wtime_list, wbox_list, dtime_list, dbox_list)
+    bsize_list = bsize_list[:n]
+    asize_list = asize_list[:n]
+    # part 3: generate configuration
+    ground_truth = np.loadtxt(folder+'/'+gtruth_file, int, delimiter=',')
+    t_conf, t_time, t_acc = select_configuration(
+        cc, acc_bound, time_list, box_list, fr_list, ground_truth)
+    # part 4: generate feature
+    feat = get_feature(cc, fr_list, time_list, box_list,
+                       bsize_list, asize_list, t_conf, ground_truth)
+    return fr_list, t_conf, t_time, t_acc, feat
+
 # %% test
 
 def __test__():
@@ -238,6 +243,7 @@ def __test__():
     import carcounter2
     
     # generate data example
+    video_folder = 'E:/Data/video'
     v3=VideoHolder('E:/Data/video/s3.mp4')
     rng3=RangeChecker('h', 0.5, 0.2, 0.1)
     cc=carcounter2.CarCounter(v3,rng3,None,None,2,0.8,None)
@@ -253,18 +259,29 @@ def __test__():
     
     # train with generated data
     vn_list = ['s3', 's4', 's5', 's7']
-    tcl, ttl, tal = [], [], []
-    for vn in vn_list:
-        d = np.load('data/%s/conf-diff.npz' % vn, allow_pickle=True)
-        fl = d['fr_list']
-        c = d['conf']
-        c[:,0] = fl[c[:,0]]
-        tcl.append(c)
-        ttl.append(d['time'])
-        tal.append(d['acc'])
+    rng_param_list = [('h', 0.5, 0.2, 0.1), ('h', 0.5, 0.2, 0.1),
+                      ('v', 0.75, 0.2, 0.1), ('h', 0.45, 0.2, 0.1)]
+    len_each = []
+    tcl, ttl, tal, tfl = [], [], [], []
+    for vn, rngp in zip(vn_list, rng_param_list):
+        v = VideoHolder(video_folder+'/'+vn+'.mp4')
+        rng = RangeChecker(*rngp)
+        cc = carcounter2.CarCounter(v,rng,None,None,2,0.8,None)
+        fr_list, t_conf, t_time, t_acc, feat = prepare_training_date(
+            cc, 'data/%s'%vn, '%s-raw-720.npz'%vn, '%s-diff-480-'%vn,
+            'ground-truth-%s'%vn, 30)
+        np.savez('data/s3/conf-diff', fr_list=fr_list,
+                 conf=t_conf, time=t_time, accuracy=t_acc, feature=feat)
+        len_each.append(len(ttl))
+        t_conf[:,0] = fr_list[t_conf[:,0]]
+        tcl.append(t_conf)
+        ttl.append(t_time)
+        tal.append(t_acc)
+        tfl.append(feat)
     tcl = np.concatenate(tcl)
     ttl = np.concatenate(ttl)
     tal = np.concatenate(tal)
+    tfl = np.concatenate(tfl)
 
     from model.framedecision import DecisionModel
     
