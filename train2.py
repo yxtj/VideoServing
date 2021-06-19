@@ -398,4 +398,34 @@ def __test__():
              eval_res_count=np.concatenate(eval_res_count),
              eval_res_acc=np.concatenate(eval_res_acc))
 
+    print(np.concatenate(eval_res_time).mean(), np.concatenate(eval_res_acc).mean())
+    for t,a in zip(eval_res_time, eval_res_acc):
+        print(t.mean(), a.mean())
+
+    import matplotlib.pyplot as plt
+
+    plt.subplot2grid((4,1),(0,0))
+    plt.plot(eval_res_time)
+    plt.ylabel('comp-time')
+    
+    plt.subplot2grid((4,1),(1,0))
+    plt.plot(eval_res_acc)
+    plt.ylabel('accuracy')
+    
+    plt.subplot2grid((4,1),(2,0))
+    fps=[]
+    for i in range(4):
+        fr_list=fr_list_each[i]
+        c = ps[off_each[i]:off_each[i+1]].copy()
+        t= fr_list[4]/fr_list[c[:,0]]
+        fps.append(t)
+    fps=np.concatenate(fps)
+    plt.plot(fps)
+    plt.ylabel('fps')
+    
+    plt.subplot2grid((4,1),(3,0))
+    plt.plot(ps[:,1])
+    plt.ylabel('method')
+    
+    plt.tight_layout()
     
