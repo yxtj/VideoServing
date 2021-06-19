@@ -3,12 +3,12 @@
 import numpy as np
 import os
 import re
+import torch
 
 from carcounter2 import load_precompute_data_diff
 from carcounter import load_precompute_data
 from track.centroidtracker import CentroidTracker
 from util import box_center
-from carcounter2 import FeatureExtractor
 
 # %% prepare training data - load and align raw data
 
@@ -115,6 +115,8 @@ def select_configuration(cc, acc_bound, time_list, box_list,
     
     fidx_mat = np.zeros((nfr, nmdl), int)
     cc.reset()
+    cc.bsize_list = np.zeros(nfrm)
+    cc.asize_list = np.zeros(nfrm)
     state = cc.get_track_state()
     for sidx in range(nsecond):
         #print('sidx',sidx)
@@ -235,6 +237,34 @@ def prepare_training_date(cc, folder,
                        bsize_list, asize_list, t_conf, ground_truth)
     return fr_list, t_conf, t_time, t_acc, feat
 
+# %% train
+
+def train_epoch(loader, model, optimizer, loss_fn):
+    lss=[]
+    for i,(bx,by) in enumerate(loader):
+        optimizer.zero_grad()
+        o=model(bx)
+        l=loss_fn(o,by)
+        l.backward()
+        optimizer.step()
+        lss.append(l.item())
+    return lss
+
+def evaluate(x, y, model):
+    model.eval()
+    with torch.no_grad():
+        p = model(x)
+        ps = [t.argmax(1) for t in p]
+    n = len(x)
+    flag1 = ps[0] == y[:,0]
+    flag2 = ps[1] == y[:,1]
+    acc1 = sum(flag1) / n
+    acc2 = sum(flag2) / n
+    acc = sum(torch.logical_and(flag1,flag2)) / n
+    ps = np.array([t.numpy() for t in ps], dtype=int).T
+    return acc, (acc1, acc2), ps
+
+
 # %% test
 
 def __test__():
@@ -244,47 +274,128 @@ def __test__():
     
     # generate data example
     video_folder = 'E:/Data/video'
-    v3=VideoHolder('E:/Data/video/s3.mp4')
-    rng3=RangeChecker('h', 0.5, 0.2, 0.1)
-    cc=carcounter2.CarCounter(v3,rng3,None,None,2,0.8,None)
-    ground_truth = np.loadtxt('data/s3/ground-truth-s3.txt', int, delimiter=',')
     
-    fr_list, time_list, box_list, bsize_list, asize_list = align_precomputed_data(
-        'data/s3/', 's3-raw-720.npz', 's3-diff-480-', 30)
+    feat_gen = carcounter2.FeatureExtractor(2, 2, 1)
     
-    t_conf, t_time, t_acc = select_configuration(
-        cc, 0.9, time_list, box_list, fr_list, ground_truth)
-    np.savez('data/s3/conf-diff',fr_list=fr_list,
-             conf=t_conf,time=t_time,acc=t_acc)
-    
-    # train with generated data
     vn_list = ['s3', 's4', 's5', 's7']
     rng_param_list = [('h', 0.5, 0.2, 0.1), ('h', 0.5, 0.2, 0.1),
                       ('v', 0.75, 0.2, 0.1), ('h', 0.45, 0.2, 0.1)]
+    fr_list_each = []
+    
     len_each = []
-    tcl, ttl, tal, tfl = [], [], [], []
+    tcrl, tcl, ttl, tal, tfl = [], [], [], [], []
+    ### compute
     for vn, rngp in zip(vn_list, rng_param_list):
         v = VideoHolder(video_folder+'/'+vn+'.mp4')
         rng = RangeChecker(*rngp)
-        cc = carcounter2.CarCounter(v,rng,None,None,2,0.8,None)
+        cc = carcounter2.CarCounter(v,rng,None,None,2,0.8,None,feat_gen=feat_gen)
         fr_list, t_conf, t_time, t_acc, feat = prepare_training_date(
             cc, 'data/%s'%vn, '%s-raw-720.npz'%vn, '%s-diff-480-'%vn,
-            'ground-truth-%s'%vn, 30)
-        np.savez('data/s3/conf-diff', fr_list=fr_list,
+            'ground-truth-%s.txt'%vn, 30, 0.9)
+        np.savez('data/%s/conf-diff.npz'%vn, fr_list=fr_list,
                  conf=t_conf, time=t_time, accuracy=t_acc, feature=feat)
-        len_each.append(len(ttl))
+        fr_list_each.append(fr_list)
+        len_each.append(len(t_conf))
+        tcrl.append(t_conf.copy())
         t_conf[:,0] = fr_list[t_conf[:,0]]
         tcl.append(t_conf)
         ttl.append(t_time)
         tal.append(t_acc)
         tfl.append(feat)
+    tcrl = np.concatenate(tcrl)
     tcl = np.concatenate(tcl)
     ttl = np.concatenate(ttl)
     tal = np.concatenate(tal)
     tfl = np.concatenate(tfl)
 
-    from model.framedecision import DecisionModel
+    ### load 
+    for vn in vn_list:
+        with np.load('data/%s/conf-diff.npz'%vn, allow_pickle=True) as data:
+            len_each.append(len(data['conf']))
+            fr_list = data['fr_list']
+            fr_list_each.append(fr_list)
+            t_conf = data['conf']
+            tcrl.append(t_conf.copy())
+            t_conf[:,0] = fr_list[t_conf[:,0]]
+            tcl.append(t_conf)
+            ttl.append(data['time'])
+            tal.append(data['accuracy'])
+            tfl.append(data['feature'])
+    tcrl = np.concatenate(tcrl)
+    tcl = np.concatenate(tcl)
+    ttl = np.concatenate(ttl)
+    tal = np.concatenate(tal)
+    tfl = np.concatenate(tfl)
+
+    # train model with generated data
+    import model.framedecision
     
-    dsm = DecisionModel(15, 30)
+    dsm = model.framedecision.DecisionModel(20, 30, (5,2))
+    loss_fn = model.framedecision.DicisionLoss()
+    x = torch.from_numpy(tfl).float()
+    #y = torch.from_numpy(tcl).long()
+    y = torch.from_numpy(tcrl).long()
+    ds = torch.utils.data.TensorDataset(x, y)
     
+    epoch = 1000
+    lr = 0.001
+    bs = 20
+
+    loader = torch.utils.data.DataLoader(ds, bs)
+    optimizer = torch.optim.Adam(dsm.parameters(), lr=lr)
+    
+    dsm.train()
+    losses = []
+    for i in range(epoch):
+        lss = train_epoch(loader, dsm, optimizer, loss_fn)
+        loss = sum(lss)
+        if i % 100 == 0:
+            print("epoch: %d, loss: %f" % (i, loss))
+        losses.append(loss)
+        
+    acc_overall, acc_individual, ps = evaluate(x, y, dsm)
+    print("overall accuracy: %f" % acc_overall)
+    print("individual accuracy:", acc_individual)
+    
+    # save model
+    torch.save(dsm, 'data/model-fr-pm-1.pth')
+    # load model
+    dsm = torch.load('data/model/fr-pm-1.pth')
+    
+    import framepreprocess
+    import detect.yolowrapper
+    
+    dmodel=detect.yolowrapper.YOLO_torch('yolov5s',0.5,(2,3,5,6,7))
+    fpp=framepreprocess.FramePreprocessor()
+    
+    off_each=np.cumsum(np.pad(len_each,(1,0)))
+    p=dsm(x)
+    ps = np.array([t.argmax(1).numpy() for t in p]).T
+    
+    eval_res_time = []
+    eval_res_count = []
+    eval_res_acc = []
+    for i, (vn, rngp) in enumerate(zip(vn_list, rng_param_list)):
+        print(i,vn)
+        v = VideoHolder(video_folder+'/'+vn+'.mp4')
+        rng = RangeChecker(*rngp)
+        fpp.reset()
+        cc = carcounter2.CarCounter(v,rng,dmodel,480,2,0.8,fpp)
+        fr_list = fr_list_each[i]
+        conf_list = ps[off_each[i]:off_each[i+1]].copy()
+        conf_list[:,0] = fr_list[conf_list[:,0]]
+        #conf_list = tcl[off_each[i]:off_each[i+1]]
+        times,counts=cc.process_with_conf(conf_list)
+        gtruth = np.loadtxt('data/%s/ground-truth-%s.txt'%(vn,vn),int,delimiter=',')
+        n = len(counts)
+        acc = cc.compute_accuray(counts, gtruth[:n], 1)
+        eval_res_time.append(times)
+        eval_res_count.append(counts)
+        eval_res_acc.append(acc)
+    
+    np.savez('data/eval_res_predicted.npz', len_each=len_each,
+             eval_res_time=np.concatenate(eval_res_time),
+             eval_res_count=np.concatenate(eval_res_count),
+             eval_res_acc=np.concatenate(eval_res_acc))
+
     

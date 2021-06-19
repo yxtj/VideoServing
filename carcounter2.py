@@ -240,6 +240,7 @@ class CarCounter():
                     bsize, asize = 0, 0
             else:
                 boxes = self.recognize_cars(frame, rs)
+                bsize, asize = 1, 1
             t1 = time.time() - t1
         elif self.rs_list is not None:
             # use pre-computed result (resolution-frame)
@@ -275,7 +276,7 @@ class CarCounter():
         t2 = time.time() - t2
         return c, t1 + t2
     
-    def process_one_second(self, rs, fr):
+    def process_one_second(self, rs, fr, m_diff=False):
         cnt = 0
         t1 = time.time()
         self.change_rs(rs)
@@ -285,19 +286,19 @@ class CarCounter():
         t1 = time.time() - t1
         t2 = 0.0
         while fidx < end_fidx:
-            c, t = self.update(fidx, rs)
+            c, t = self.update(fidx, rs, m_diff)
             cnt += c
             t2 += t
             fidx += fr
         return cnt, t1 + t2
     
-    def process_period(self, fidx_start, fidx_end, rs, fr):
+    def process_period(self, fidx_start, fidx_end, rs, fr, m_diff=False):
         cnt = 0
         self.change_rs(rs)
         self.change_fr(fr)
         tt = 0.0
         for fidx in range(fidx_start, fidx_end, fr):
-            c, t = self.update(fidx, rs)
+            c, t = self.update(fidx, rs, m_diff)
             cnt += c
             tt += t
         return cnt, tt
@@ -313,25 +314,38 @@ class CarCounter():
         confs = np.zeros((n_second, 2), int)
         for i in range(start_second, start_second+n_second):
             self.sidx = i
-            cnt, t = self.process_one_second(self.rs, self.fr)
+            cnt, t = self.process_one_second(self.rs, self.fr, False)
             if self.feat_gen is not None:
                 # update feature
                 tt = time.time()
-                self.feat_gen.move(cnt, (self.rs, self.fr))
+                self.feat_gen.move(cnt, (self.rs, self.fr, 0))
                 t+= time.time() - tt
             if self.cmodel is not None:
                 # predict next configuration
                 tt = time.time()
                 feature = self.feat_gen.get()
-                rs, fr = self.cmodel(feature)
+                rs, fr, mi = self.cmodel(feature)
                 self.rs = rs
                 self.fr = fr
+                self.mi = mi
                 t += time.time() - tt
             times[i] = t
             counts[i] = cnt
             confs[i] = (self.rs, self.fr)
         return times, counts, confs
     
+    def process_with_conf(self, conf_list):
+        n_second = self.video.length_second(True)
+        n_second = min(n_second, len(conf_list))
+        times = np.zeros(n_second, float)
+        counts = np.zeros(n_second, int)
+        for i in range(n_second):
+            self.sidx = i
+            fr, mi = conf_list[i]
+            cnt, t = self.process_one_second(self.rs, fr, mi==1)
+            times[i] = t
+            counts[i] = cnt
+        return times, counts
     
     ##########
     
