@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
-import torch
-import cv2
+#import torch
+#import cv2
 import numpy as np
 import time
 import matplotlib.pyplot as plt
@@ -201,7 +201,7 @@ def simulate_workloads(cts, length):
                 off += l
     return res
 
-def pad_data_list(data_list, length):
+def sum_pad_data_list(data_list, length):
     # data_list is a list of n-D array (n>1)
     shape = data_list[0].shape
     dtype = data_list[0].dtype
@@ -221,9 +221,22 @@ def pad_data_list(data_list, length):
                 off += l
     return res
 
+def pad_data_list(data_list, length):
+    # data_list is a list of 1-D array
+    n = len(data_list)
+    dtype = data_list[0].dtype
+    res = np.zeros((n, length), dtype=dtype)
+    for i, data in enumerate(data_list):
+        r = (length + len(data) - 1) // len(data)
+        d = np.tile(data, r)[:length]
+        res[i,:] = d
+    return res
 
-def moving_average(array, window):
-    return np.convolve(array, np.ones(window), 'same') / window
+
+def moving_average(array, window, padmethod='mean'):
+    assert padmethod in ['edge', 'linear_ramp', 'mean', 'median']
+    d = np.pad(array, (window-1, 0), padmethod)
+    return np.convolve(d, np.ones(window), 'valid') / window
     
 
 def get_delay_usage_with_bound(loads, bound, unit):
@@ -343,11 +356,16 @@ def __test_show_profile__():
     vn_list = ['s3', 's4', 's5', 's7']
     segment = 1
     
+    # cycler
+    prop_cycle = plt.rcParams['axes.prop_cycle']
+    colors = prop_cycle.by_key()['color']
+    lines = ["-","--","-.",":"]
+    
     pts=[]
     pas=[]
     pss=[]
     for i,vn in enumerate(vn_list):
-        _,_,sg_list,cts,cas=load_configurations('data/conf-%s.npz' % vn)
+        _,_,sg_list,cts,cas=load_configurations('data/%s/conf-%s.npz' % (vn,vn))
         sg_idx=sg_list.tolist().index(segment)
         pt,pa,ps=get_profile_bound_acc(cts[sg_idx],cas[sg_idx],0.9)
         pts.append(pt)
@@ -375,3 +393,175 @@ def __test_show_profile__():
         plt.subplot2grid((2,2),(i//2,i%2))
         show_delay_usage(pts[i],delay,usage,bound,None,'times(s)' if i%2==0 else '',
                          None, False, False)
+    
+    # profile accuracy-computing time
+    
+    i = 2
+    pt, pa = pts[i], pas[i]
+    #vn = vn_list[i]
+    #_,_,sg_list,cts,cas=load_configurations('data/%s/conf-%s.npz' % (vn,vn))
+    #pt, pa = cts[0][3,0,:], cas[0][3,0,:]
+    
+    plt.figure()
+    plt.subplot2grid((2,1),(0,0))
+    plt.plot(moving_average(pt,10))
+    #plt.xlabel('time (s)')
+    plt.ylabel('cmp-res (s)')
+    #plt.ylim((-1,11))
+    plt.subplot2grid((2,1),(1,0))
+    plt.plot(moving_average(pa,10))
+    plt.xlabel('time (s)')
+    plt.ylabel('accuracy')
+    plt.ylim((-0.1,1.1))
+    plt.tight_layout()
+    
+    ## serving multiple videos (separatedly vs jointly)
+    
+    ptt = pad_data_list(pts,400)
+    paa = pad_data_list(pas,400)
+    b=1.5
+    
+    ds, us = [], []
+    for i in range(len(pts)):
+        pt=ptt[i,:]
+        bound = pt.mean()*b
+        #t = moving_average(pt,5)
+        d,u = get_delay_usage_with_bound(pt,bound,1)
+        ds.append(d)
+        us.append(u)
+    
+    dsmm = np.array([(d.mean(),d.max()) for d in ds])
+    pt = ptt.sum(0)
+    dsum, usum = get_delay_usage_with_bound(pt, pt.mean()*b, 1)
+    
+    # workload
+    
+    plt.figure()
+    for i in range(4):
+        if i % 2 == 0:
+            plt.subplot2grid((2,1),(i//2,0))
+            #lbls=[]
+        plt.plot(moving_average(ptt[i],10), color=colors[i])
+        #lbls.append('video-%d'%i)
+        #if i % 2 == 1:
+        #    plt.legend(lbls)
+        plt.ylabel('cmp-res (s)')
+    plt.xlabel('time (s)')
+    plt.tight_layout()
+    
+    plt.figure()
+    for i in range(4):
+        plt.plot(moving_average(ptt[i],10), color=colors[i])
+    plt.ylabel('cmp-resource (s)')
+    plt.xlabel('time (s)')
+    plt.legend(['v%d'%i for i in range(4)], ncol=2)
+    #plt.ylim((-0.2,5.1))
+    plt.tight_layout()
+    
+    plt.figure()
+    plt.plot(moving_average(pt,10))
+    plt.xlabel('time (s)')
+    plt.ylabel('total cmp-resource (s)')
+    #plt.ylim((-0.2,5.1))
+    plt.tight_layout()
+
+    q = 0.95
+    t = [np.quantile(ptt[i], q)/ptt[i].mean() for i in range(4)]
+    print('%g%% of slots finish within X times of the average:' %q, t)
+    t2=[ptt[i,ptt[i]/ptt[i].mean()>t[i]].mean()/ptt[i].mean() for i in range(4)]
+    print('the slowest %g%% slots requires X times of the average'%q, t2)
+
+    np.quantile(pt, q)
+    t = np.quantile(pt, q)/pt.mean()
+    print('%g%% of slots finish no more than %.2f times of the average '%(q*100, t))
+    
+    # individual delay
+    width=0.8
+    
+    plt.figure()
+    x = np.arange(4)
+    plt.bar(x-width/4, dsmm[:,0], width=width/2)
+    plt.bar(x+width/4, dsmm[:,1], width=width/2)
+    #plt.bar(np.arange(5)+width/4, np.concatenate([dsmm[:,0],[dsum.mean()]]), width=width/2)
+    #plt.bar(np.arange(5)+width/4, np.concatenate([dsmm[:,1],[dsum.max()]]), width=width/2)
+    plt.ylabel('delay (s)')
+    plt.legend(['average','maximum'])
+    plt.xticks(x, ['video-%d'%i for i in x], rotation=-30)
+    plt.tight_layout()
+    
+    plt.figure()
+    for i in range(4):
+        bound=ptt[i].mean()*b
+        delay,usage=get_delay_usage_with_bound(ptt[i],bound,1)
+        plt.plot(delay)
+    plt.legend(['video-%d'%i for i in range(4)], ncol=1)
+    plt.xlabel('time (s)')
+    plt.ylabel('delay (s)')
+    plt.tight_layout()
+    
+    # delay comparision
+    plt.figure()
+    x = np.arange(2)
+    plt.bar(x-width/4, [dsmm[:,0].mean(), dsum.mean()], width=width/2)
+    plt.bar(x+width/4, [dsmm[:,1].max(), dsum.max()], width=width/2)
+    plt.ylabel('delay (s)')
+    plt.legend(['mean-delay','max-delay'])
+    plt.xticks(x, ['Separated', 'Joint'], rotation=0)
+    plt.tight_layout()
+
+    # mean delay
+    plt.figure()
+    x = np.arange(2)
+    plt.bar(x, [dsmm[:,0].mean(), dsum.mean()], width=0.6)
+    plt.xlim((-0.6,1.6))
+    plt.ylabel('delay (s)')
+    plt.xticks(x, ['individually\nserve', 'jointly\nserve'], rotation=0)
+    plt.tight_layout()
+    
+    # max delay
+    plt.figure()
+    x = np.arange(2)
+    plt.bar(x, [dsmm[:,1].max(), dsum.max()], width=0.6)
+    plt.xlim((-0.6,1.6))
+    plt.ylabel('delay (s)')
+    plt.xticks(x, ['individually\nserve', 'jointly\nserve'], rotation=0)
+    plt.tight_layout()
+    
+    
+    ## verification task
+    import util.sample_data
+    import util.sample_index
+    
+    i=2
+    vn=vn_list[i]
+    _,_,sg_list,cts,cas=load_configurations('data/%s/conf-%s.npz' % (vn,vn))
+    pag = cas[0][3,0]
+    #pag = cas[0].reshape(24,-1).max(0)
+    pa = pas[i]
+    
+    off = 0
+    off = 2
+    
+    # pick 1 second every 30 second
+    pad = np.zeros_like(pa)+np.nan
+    vidx = util.sample_index(len(pag), 30, 1)+off
+    vdata = util.sample_data(moving_average(pag, 10)[off:], 30, 1)
+    pad[vidx] = vdata
+    #pad[util.sample_index(len(pag),30,1)]=util.sample_data(moving_average(pag,10),30,1)
+    #pad[util.sample_index(len(pag)+off,30,1)]=util.sample_data(moving_average(pag,10)[2:],30,1)
+    
+    plt.figure()
+    #t=np.array([moving_average(pa, 10), moving_average(pag, 10)])
+    plt.plot(pad, '-X', markersize=8, color=colors[0])
+    plt.plot(moving_average(pa, 10), '--', color=colors[1])
+    plt.plot(moving_average(pag, 10), '-', color=colors[0])
+    plt.ylim((-0.1, 1.1))
+    plt.xlabel('time (s)')
+    plt.ylabel('accuracy')
+    #plt.legend(['verify-all', 'verify-smp', 'live'])
+    #plt.legend(['verify', '_hidden', 'live'])
+    plt.legend(['certify', 'live', 'actual'])
+    plt.tight_layout()
+    
+    
+        
