@@ -85,3 +85,25 @@ def sample_data(data, period, slength, pos='tail'):
         if len(t) == nf_s: # in case the last period is not complete
             res.append(t)
     return np.array(res)
+
+def pad_with_sample(data, period, slength=1, off=0, pos='middle', line=True):
+    vidx=sample_index(len(data[off:]), period, slength, pos)+off
+    vdata=sample_data(data[off:], period, slength, pos)
+    if line == False:
+        pad=np.zeros_like(data)+np.nan
+        pad[vidx] = vdata
+    else:
+        pad=np.zeros_like(data)
+        if pos == 'head':
+            vidx2=np.pad(vidx.ravel(),(0,1),constant_values=len(data))
+            vidx2[0]=0
+        elif pos == 'middle':
+            vidx2 = vidx.ravel().copy()
+            vidx2 = [(vidx2[i]+vidx2[i+1])//2 for i in range(len(vidx2)-1)]
+            vidx2=np.pad(vidx2,1,constant_values=(0, len(data)))
+        else:
+            vidx2=np.pad(vidx.ravel(),(1,0),constant_values=0)
+            vidx2[-1]=len(data)
+        for i in range(len(vidx2)-1):
+            pad[vidx2[i]:vidx2[i+1]]=vdata[i]
+    return pad,vidx
