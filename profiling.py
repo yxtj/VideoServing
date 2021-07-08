@@ -538,30 +538,51 @@ def __test_show_profile__():
     pag = cas[0][3,0]
     #pag = cas[0].reshape(24,-1).max(0)
     pa = pas[i]
+    #pa=cas[0][2:,:3].reshape(6,-1).max(0)
     
     off = 0
     off = 2
     
-    # pick 1 second every 30 second
-    pad = np.zeros_like(pa)+np.nan
-    vidx = util.sample_index(len(pag), 30, 1)+off
-    vdata = util.sample_data(moving_average(pag, 10)[off:], 30, 1)
-    pad[vidx] = vdata
+    #pad = np.zeros_like(pag)+np.nan
     #pad[util.sample_index(len(pag),30,1)]=util.sample_data(moving_average(pag,10),30,1)
-    #pad[util.sample_index(len(pag)+off,30,1)]=util.sample_data(moving_average(pag,10)[2:],30,1)
+    #pad[util.sample_index(len(pag)+off,30,1)]=util.sample_data(moving_average(pag,10)[off:],30,1)
     
-    plt.figure()
+    # pick 1 second every 30 second
+    pad,vidx=util.pad_with_sample(moving_average(pag, 10), 30, 1, off, 'middle', True)
+    pad2=np.zeros_like(pad)+np.nan
+    pad2[vidx]=pad[vidx]
+    #pad,_=util.pad_with_sample(moving_average(pag, 10), 30, 1, off, 'middle', False)
+
     #t=np.array([moving_average(pa, 10), moving_average(pag, 10)])
-    plt.plot(pad, '-X', markersize=8, color=colors[0])
-    plt.plot(moving_average(pa, 10), '--', color=colors[1])
-    plt.plot(moving_average(pag, 10), '-', color=colors[0])
+    plt.figure()
+    plt.plot(moving_average(pag, 10), '--', color=colors[0])
+    plt.plot(pad, '--', color=colors[1])
+    plt.plot(pad2, '--X', markersize=6, color=colors[1])
+    plt.plot(moving_average(pa, 10), '-', color=colors[2])
     plt.ylim((-0.1, 1.1))
     plt.xlabel('time (s)')
     plt.ylabel('accuracy')
-    #plt.legend(['verify-all', 'verify-smp', 'live'])
-    #plt.legend(['verify', '_hidden', 'live'])
-    plt.legend(['certify', 'live', 'actual'])
+    #plt.legend(['actual', 'certify', 'sample', 'live'], ncol=2)
+    plt.legend(['actual', '_sample', 'certify', 'live'])
     plt.tight_layout()
     
     
-        
+    plt.figure()
+    for i,prd in enumerate([15,30,60]):
+        pad,vidx = util.pad_with_sample(moving_average(pag, 10), prd, 1, 0, 'middle', True)
+        pad2=np.zeros_like(pad)+np.nan
+        pad2[vidx]=pad[vidx]
+        plt.subplot2grid((3,1),(i,0))
+        plt.plot(moving_average(pag, 10), '--', color=colors[0])
+        plt.plot(pad2, '--X', markersize=4, color=colors[1])
+        plt.plot(pad, '--', color=colors[1])
+        plt.ylim([0.7,1.05])
+        plt.ylabel('SR:%d'%prd)
+        if i < 2:
+            # remove x ticks
+            plt.xticks([0,200,400],[])
+        else:
+            # legend outside lower
+            plt.legend(['actual','certify'],ncol=2,loc='upper left',bbox_to_anchor=(0,-0.5))
+    plt.tight_layout()
+    
