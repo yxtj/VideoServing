@@ -179,7 +179,7 @@ def show_selection(pf_time, pf_acc, pf_sel,
     plt.ylabel('fps')
     
     plt.tight_layout()
-    
+
 
 # %% scheduling
 
@@ -453,8 +453,9 @@ def __test_show_profile__():
     for i in range(4):
         plt.plot(moving_average(ptt[i],10), color=colors[i])
     plt.ylabel('cmp-resource (s)')
+    #plt.ylabel('resource (GFLOPS)')
     plt.xlabel('time (s)')
-    plt.legend(['v%d'%i for i in range(4)], ncol=2)
+    plt.legend(['stream-%d'%i for i in range(4)], ncol=1)
     #plt.ylim((-0.2,5.1))
     plt.tight_layout()
     
@@ -462,6 +463,7 @@ def __test_show_profile__():
     plt.plot(moving_average(pt,10))
     plt.xlabel('time (s)')
     plt.ylabel('total cmp-resource (s)')
+    #plt.ylabel('total resource (GFLOPS)')
     #plt.ylim((-0.2,5.1))
     plt.tight_layout()
 
