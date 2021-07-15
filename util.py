@@ -7,6 +7,8 @@ Created on Sun Feb  7 03:09:50 2021
 
 import numpy as np
 
+# %% bound box
+
 def compIoU(boxA, boxB):
     xA = max(boxA[0], boxB[0])
     yA = max(boxA[1], boxB[1])
@@ -34,6 +36,8 @@ def box_center(boxes):
     else:
         c = (boxes[:,:2]+boxes[:,2:])/2
     return c
+
+# %% data sampling
 
 def sample_index(n, period, slength, pos='tail'):
     assert period >= slength
@@ -107,3 +111,15 @@ def pad_with_sample(data, period, slength=1, off=0, pos='middle', line=True):
         for i in range(len(vidx2)-1):
             pad[vidx2[i]:vidx2[i+1]]=vdata[i]
     return pad,vidx
+
+# %%
+
+def moving_average(array, window, padmethod='mean'):
+    assert padmethod in ['edge', 'linear_ramp', 'mean', 'median']
+    pshape = [(0,0) for _ in range(array.ndim-1)] + [(window-1, 0)]
+    d = np.pad(array, pshape, padmethod)
+    kernel = np.ones(window)/window
+    if array.ndim == 1:
+        return np.convolve(d, kernel, 'valid')
+    else:
+        return np.apply_along_axis(lambda x:np.convolve(x,kernel,'valid'),-1,d)
