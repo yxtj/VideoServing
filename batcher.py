@@ -111,7 +111,7 @@ class FrameHolder():
             res = self.queues[rs][:self.batchsize]
             del self.queues[rs][:self.batchsize]
             del self.infos[rs][:self.batchsize]
-        return res, rs        
+        return res      
     
     def get_queue(self, rs):
         res = None
@@ -120,49 +120,7 @@ class FrameHolder():
                 res = self.queues[rs]
                 self.queues[rs] = []
                 self.infos[rs] = []
-        return res, rs
-    
-    def get_by_queue_length(self, ql_limit=None):
-        if ql_limit is None:
-            ql_limit = self.batchsize
-        res = None
-        for rs in self.rsl_list:
-            q = self.queues[rs]
-            if len(q) >= ql_limit:
-                with self.locks[rs]:
-                    res = self.queues[rs]
-                    self.queues[rs] = []
-                    self.infos[rs] = []
-                break
-        return res, rs
-    
-    def get_by_queuing_delay(self, delay_limit=2.0, now=None):
-        res = None
-        if delay_limit is None:
-            delay_limit = self.max_delay
-        if now is None:
-            now = time.time()
-        for rs in self.rsl_list:
-            qi = self.infos[rs]
-            if len(qi) > 0 and now - qi[0].time > delay_limit:
-                with self.locks[rs]:
-                    res = self.queues[rs]
-                    self.queues[rs] = []
-                    self.infos[rs] = []
-                break
-        return res, rs
-    
-    def get_by_estimated_delay(self):
-        res = None
-        etds = self.__estimated_delays__()
-        ind = etds.argmax()
-        rs = self.rsl_list[ind]
-        if len(self.queues[rs]) > 0:
-            with self.locks[rs]:
-                res = self.queues[rs]
-                self.queues[rs] = []
-                self.infos[rs] = []
-        return res, rs
+        return res
     
     # -- inner functions --
     
@@ -518,7 +476,7 @@ def __test3__():
     
     speed_factor = 2.0
     
-    # schedule - fast queue first
+    # schedule - small resolution first
     fh=FrameHolder(rsl_list, bs, dl, mat_pt)
     ptime = 0.0
     delay = 0.0
@@ -526,13 +484,13 @@ def __test3__():
         (t, frame, jid, sid, fid, rs, fr) = tsk
         fh.put(frame, jid, sid, fid, Configure(rs, fr, False, 'yolov5m'), t)
         if ptime >= t: # can process images
-            rdy_rs = fh.ready_fast_first()
+            rdy_rs = fh.ready_small_first()
             if rdy_rs:
-                batch, _ = fh.get_batch(rs)
+                batch = fh.get_batch(rs)
                 eta = fh.estimate_processing_time(rs, len(batch))
                 ptime = t + eta/speed_factor
     for rs in rsl_list:
-        batch, _ = fh.get_batch(rs)
+        batch = fh.get_batch(rs)
         while batch:
             eta = fh.estimate_processing_time(rs, len(batch))
             ptime = t + eta/speed_factor
@@ -542,18 +500,3 @@ def __test3__():
     # schedule - early first
     fh=FrameHolder(rsl_list, bs, dl, mat_pt)
     ptime = 0.0
-    for tsk in tasks:
-        (t, frame, jid, sid, fid, rs, fr) = tsk
-        fh.put(frame, jid, sid, fid, Configure(rs, fr, False, 'yolov5m'), t)
-        if ptime >= t: # can process images
-            rdy_rs = fh.ready_early_first()
-            if rdy_rs:
-                bs, _ = fh.get_batch(rs)
-                eta = fh.estimate_processing_time(rs, len(bs))
-                ptime = t + eta/speed_factor
-    for rs in rsl_list:
-        while fh.ready(rs):
-            bs, _ = fh.get_batch(rs)
-            eta = fh.estimate_processing_time(rs, len(bs))
-            ptime = t + eta/speed_factor
-    print(ptime)
