@@ -8,7 +8,7 @@ from threading import Lock
 Configure = namedtuple('Configure', ['rs', 'fr', 'roi', 'model'])
 FrameInfo = namedtuple('FrameInfo', ['jid', 'sid', 'fid', 'time'])
 
-# next step: add queues for different models
+# next: add queues for different models
 
 class FrameHolder():
     
@@ -27,6 +27,8 @@ class FrameHolder():
             assert mat_pt.ndim == 2 and mat_pt.shape[0] == len(rsl_list)
             self.max_pbs = mat_pt.shape[1]
             assert self.max_pbs >= bs
+        
+        self.set_ready_method('small')
     
     def clear(self):
         self.queues = { rs:[] for rs in self.rsl_list }
@@ -54,27 +56,41 @@ class FrameHolder():
     
     # info query functions
     
-    def query_queue_lengths(self):
-        return { k:len(q) for k,q in self.queues.items() }
+    def query_queue_length(self, rs=None):
+        if rs is None:
+            return { k:len(q) for k,q in self.queues.items() }
+        else:
+            return self.queues[rs]
+
+    def query_queue_length_as_list(self):
+        l = np.zeros(len(self.rsl_list), int)
+        for i, rs in enumerate(self.rsl_list):
+            l[i] = len(self.queues[rs])
+        return l
     
-    def query_queue_length(self, rs):
-        return self.queues[rs]
-    
-    def query_waiting_times(self, now=None):
+    def query_waiting_time(self, rs=None, now=None):
         if now is None:
             now = time.time()
-        return { k:0 if len(q)==0 else q[0].time - now for k,q in self.infos.items() }
+        if rs is None:
+            return { k:0 if len(q)==0 else q[0].time - now for k,q in self.infos.items() }
+        else:
+            iq = self.infos[rs]
+            return 0 if len(iq) == 0 else iq[0].time - now
     
-    def query_waiting_time(self, rs, now=None):
+    def query_waiting_time_as_list(self, now=None):
         if now is None:
             now = time.time()
-        iq = self.infos[rs]
-        return 0 if len(iq) == 0 else iq[0].time - now
+        l = np.zeros(len(self.rsl_list), int)
+        for i, rs in enumerate(self.rsl_list):
+            q = self.info[rs]
+            l[i] = 0 if len(q)==0 else q[0].time - now
+        return l
     
-    # find ready queue
+    # find ready queue        
     
     def ready_early_first(self):
-        t = [info[0].time if len(info)>0 else np.inf for rs,info in self.infos.items()]
+        t = [info[0].time if len(info)>=self.batchsize else np.inf 
+             for rs,info in self.infos.items()]
         ind = np.argmin(t)
         if np.isinf(t[ind]):
             return None
@@ -88,41 +104,60 @@ class FrameHolder():
         else:
             return None
    
-    def ready_fast_first(self, now=None):
+    def ready_finish_first(self, now=None):
         if now is None:
             now = time.time()
         etds = np.zeros(len(self.rsl_list)) + np.inf
-        for i, rs in self.rsl_list:
+        for i, rs in enumerate(self.rsl_list):
             info = self.infos[rs]
-            if len(info)>0:
-                etds = now - info[0].time
-                etds += self.estimate_processing_time(rs, min(self.batchsize, len(info)))
+            if len(info) >= self.batchsize:
+                etds[i] = now - info[0].time
+                etds[i] += self.estimate_processing_time(rs, min(self.batchsize, len(info)))
         ind = etds.argmin()
         if np.isinf(etds[ind]):
             return None
         return self.rsl_list[ind]
-       
-   
+
+    def set_ready_method(self, m):
+        assert m in ['early', 'small', 'finish']
+        if m == 'early':
+            self.ready = lambda now: self.ready_early_first()
+        elif m == 'small':
+            self.ready = lambda now: self.ready_small_first()
+        else:
+            self.ready = self.ready_finish_first
+        
     # data get functions
     
     def get_batch(self, rs):
-        res = None
-        with self.locks[rs]:
-            res = self.queues[rs][:self.batchsize]
-            del self.queues[rs][:self.batchsize]
-            del self.infos[rs][:self.batchsize]
-        return res      
-    
-    def get_queue(self, rs):
-        res = None
+        res_f = None
+        res_i = None
         if len(self.queues[rs]) > 0:
             with self.locks[rs]:
-                res = self.queues[rs]
+                res_f = self.queues[rs][:self.batchsize]
+                res_i = self.infos[rs][:self.batchsize]
+                del self.queues[rs][:self.batchsize]
+                del self.infos[rs][:self.batchsize]
+        return res_f, res_i
+    
+    def get_queue(self, rs):
+        res_f = None
+        res_i = None
+        if len(self.queues[rs]) > 0:
+            with self.locks[rs]:
+                res_f = self.queues[rs]
+                res_i = self.infos[rs]
                 self.queues[rs] = []
                 self.infos[rs] = []
-        return res
+        return res_f, res_i
     
     # -- inner functions --
+    
+    def __fast_queue_length__(self):
+        res = np.zeros(len(self.rsl_list), int)
+        for i, (rs, q) in enumerate((self.queues.items())):
+            res[i] = len(q)
+        return res
     
     def __estimated_delay_one__(self, rs, now):
         q = self.queues[rs]
@@ -149,39 +184,26 @@ class FrameHolder():
                 etds[i] = etd
         return etds
     
-    def __queue_length__(self):
-        l = np.zeros(len(self.rsl_list), int)
-        for i, rs in enumerate(self.rsl_list):
-            l[i] = len(self.queues[rs])
-        return l
     
 # %% test utils
 
-def workload_to_tasks(workload, rsl_list, max_fps=30):
-    # result: (time, frame, jid, sid, fid, rs, fr)
-    assert workload.ndim == 3
-    assert workload.shape[2] == 2
-    nsource, nlength = workload.shape[:2]
-    res = []
-    fids = [0 for _ in range(nsource)]
-    for i in range(nlength):
-        tasks = []
-        for j in range(nsource):
-            ind_rs = workload[j,i,0]
-            rs = rsl_list[ind_rs]
-            nf = workload[j,i,1]
-            if nf == 0:
-                continue
-            fr = int(max_fps/nf)
-            for k in range(nf):
-                t = i + (nf/30)*k
-                tasks.append((t, j, fr, ind_rs))
-        tasks.sort(key=lambda v:v[0])
-        for t, sid, fr, ind_rs in tasks:
-            rs = rsl_list[ind_rs]
-            res.append((t, np.zeros((int(rs/9*16),rs)), 0, sid, fids[sid], rs, fr))
-            fids[sid] += 1
-    return res
+from dataclasses import dataclass
+
+@dataclass
+class Task:
+    time: float
+    frame: np.ndarray
+    jid: int
+    sid: int
+    fid: int
+    rs: int
+    fr: int
+    dqueue: float = 0
+    dprocess: float = 0
+    
+    def delay(self):
+        return self.dqueue + self.dprocess
+    
 
 def compute_distribution_from_real(workload, nrsl, fps_list):
     if workload.ndim == 3:
@@ -211,15 +233,116 @@ def simulate_workloads(nsource, nlength, distr_rsl, cdistr_rsl_fps, fps_list):
     assert nrsl == len(distr_rsl)
     assert nfps == len(fps_list)
     res = np.zeros((nsource, nlength, 2), int)
+    smy = np.zeros((nlength, nrsl), int)
     for i in range(nsource):
         inds = np.random.choice(range(nrsl), nlength, p=distr_rsl)
         res[i,:,0] = inds
         for j in range(nrsl):
             p = inds==j
-            res[i,p,1] = np.random.choice(fps_list, sum(p), p=cdistr_rsl_fps[j])
+            cnts = np.random.choice(fps_list, sum(p), p=cdistr_rsl_fps[j])
+            res[i,p,1] = cnts
+            smy[p, j] += cnts
+    return res, smy
+   
+def workload_to_tasks(workload, rsl_list, max_fps=30):
+    # result: (time, frame, jid, sid, fid, rs, fr)
+    assert workload.ndim == 3
+    assert workload.shape[2] == 2
+    nsource, nlength = workload.shape[:2]
+    res = []
+    fids = [0 for _ in range(nsource)]
+    for i in range(nlength):
+        tasks = []
+        for j in range(nsource):
+            ind_rs = workload[j,i,0]
+            rs = rsl_list[ind_rs]
+            nf = workload[j,i,1]
+            if nf == 0:
+                continue
+            fr = int(max_fps/nf)
+            for k in range(nf):
+                t = i + 1.0/30*k*fr
+                tasks.append((t, j, fr, ind_rs))
+        tasks.sort(key=lambda v:v[0])
+        for t, sid, fr, ind_rs in tasks:
+            rs = rsl_list[ind_rs]
+            #res.append((t, np.zeros((int(rs/9*16),rs)), 0, sid, fids[sid], rs, fr))
+            res.append(Task(t, None, 0, sid, fids[sid], rs, fr))
+            fids[sid] += 1
     return res
+
+def optimal_process(tasks, rsl_list, batchsize, mat_pt):
+    nrsl = len(rsl_list)
+    assert mat_pt.ndim == 2
+    assert mat_pt.shape[0] == nrsl
+    assert mat_pt.shape[1] >= batchsize
+    t0 = tasks[0].time
+    nlength = int(np.ceil(tasks[-1].time - t0))
+    rsl_index = { rs:i for i,rs in enumerate(rsl_list) }
+    costs = mat_pt[:,batchsize-1]*batchsize
     
+    queues = [[] for i in range(nrsl)] # the receiving time of each task
+    loads = np.zeros((nrsl, nlength))
+    delays = []
+    for tsk in tasks:
+        rs = tsk.rs
+        t = tsk.time
+        ind_rs = rsl_index[rs]
+        q = queues[ind_rs]
+        q.append(t)
+        if len(q) >= batchsize:
+            ind_t = int(t-t0)
+            c = costs[ind_rs]
+            loads[ind_rs,ind_t] += c
+            for tt in q:
+                delays.append((t-tt, c))
+            q.clear()
+    rest = np.zeros(nrsl)
+    for ind_rs, q in enumerate(queues):
+        c = costs[ind_rs]/batchsize*len(q)
+        rest[ind_rs] += c
+    delays = np.array(delays)
+    return loads, rest, delays
+
+def simulate_process(tasks, fh, nlength, speed_factor):
+    ptime = 0.0
+    loads = np.zeros(nlength)
+    loads_detail = []
+    delays = []
+    for i in range(len(tasks)):
+        tsk = tasks[i] # next task
+        #(t, frame, jid, sid, fid, rs, fr) = tsk
+        while ptime <= tsk.time:
+            rdy_rs = fh.ready(ptime) # ready is a delegate function for scheduling
+            if rdy_rs:
+                batch,info = fh.get_batch(rdy_rs)
+                load = fh.estimate_processing_time(rdy_rs, len(batch))
+                loads_detail.append((ptime, rdy_rs, len(batch), load, fh.query_queue_length_as_list()))
+                loads[int(ptime)] += load
+                eta = load/speed_factor
+                for ifo in info:
+                    delays.append((ptime - ifo.time, eta))
+                ptime = tsk.time + eta
+            else:
+                break
+        fh.put(tsk.frame, tsk.jid, tsk.sid, tsk.fid, Configure(tsk.rs, tsk.fr, False, 'yolov5m'), tsk.time)
+    rest_load = 0.0
+    for rs in fh.rsl_list:
+        #while batch_info := fh.get_batch(rs):
+        batch,_ = fh.get_batch(rs)
+        while batch:
+            load = fh.estimate_processing_time(rs, len(batch))
+            rest_load += load
+            batch,_ = fh.get_batch(rs)
+    delays = np.array(delays)
+    print('ft=%.3f rest=%.3f rest_t=%.3f avg_load=%.3f avg_delay=[%.4f %.4f]' %
+          (ptime, rest_load, rest_load/speed_factor, loads.mean(), *delays.mean(0)))
+    return loads, rest_load, delays, loads_detail
+
+
 # %% test
+import matplotlib.pyplot as plt
+import util
 
 def __test__():
     rsl_list=[240,360,480,720]
@@ -360,11 +483,7 @@ def __test2__():
         tasks.sort(key=lambda v:v[0])
         for t, sid, fr, ind_rs in tasks:
             rs = rsl_list[ind_rs]
-            n = fh.put(np.zeros((int(rs/9*16),rs)), 0, i, fids[sid], Configure(rs, fr, False, 'yolov5m'))
-            fids[sid] += 1
-            tmp = [*fh.infos[rs][-1]]
-            tmp[-1] = t
-            fh.infos[rs][-1] = FrameInfo(*tmp)
+            n = fh.put(np.zeros((int(rs/9*16),rs)), 0, i, fids[sid], Configure(rs, fr, False, 'yolov5m'), t)
             if n >= bs or t - fh.infos[rs][0].time >= dl:
                 d, _ = fh.get_queue(rs)
                 loads[i] += mat_pt[ind_rs, min(n, bs)-1]*n
@@ -394,11 +513,7 @@ def __test2__():
         tasks.sort(key=lambda v:v[0])
         for t, sid, fr, ind_rs in tasks:
             rs = rsl_list[ind_rs]
-            n = fh.put(np.zeros((int(rs/9*16),rs)), 0, i, fids[sid], Configure(rs, fr, False, 'yolov5m'))
-            fids[sid] += 1
-            tmp = [*fh.infos[rs][-1]]
-            tmp[-1] = t
-            fh.infos[rs][-1] = FrameInfo(*tmp)
+            n = fh.put(np.zeros((int(rs/9*16),rs)), 0, i, fids[sid], Configure(rs, fr, False, 'yolov5m'), t)
         etds = fh.__estimated_delays__()
         qls = fh.__queue_length__()
         indexes = sorted(np.arange(len(rsl_list)), key=lambda i:etds[i])
@@ -470,33 +585,58 @@ def __test3__():
     fps_list = [1, 2, 5, 10, 15, 30]
     nsource = 10
     distr_rsl, cdistr_rsl_fps = compute_distribution_from_real(workload, len(rsl_list), fps_list)
-    w = simulate_workloads(nsource, nlength, distr_rsl, cdistr_rsl_fps, fps_list)
+    w,smy = simulate_workloads(nsource, nlength, distr_rsl, cdistr_rsl_fps, fps_list)
     assert w.shape == (nsource, nlength, 2)
-    tasks = workload_to_tasks(workload, rsl_list, 30)
+    tasks = workload_to_tasks(w, rsl_list, 30)
     
-    speed_factor = 2.0
+    opt_loads,opt_rest,opt_delays = optimal_process(tasks, rsl_list, bs, mat_pt)
+    print(opt_loads.mean(1), opt_rest, opt_delays.mean(0))
     
-    # schedule - small resolution first
+    plt.figure()
+    plt.plot(util.moving_average(opt_loads,10).T)
+    plt.ylim((-1, None))
+    plt.plot(util.moving_average(opt_loads.sum(0),10).T,'--')
+    plt.legend(rsl_list+['sum'])
+    plt.ylabel('opt-workload (s)')
+    plt.xlabel('time (s)')
+    plt.tight_layout()
+    
+    speed_factor = 10.0
+    capacity = 1 * speed_factor
+    
     fh=FrameHolder(rsl_list, bs, dl, mat_pt)
-    ptime = 0.0
-    delay = 0.0
-    for tsk in tasks:
-        (t, frame, jid, sid, fid, rs, fr) = tsk
-        fh.put(frame, jid, sid, fid, Configure(rs, fr, False, 'yolov5m'), t)
-        if ptime >= t: # can process images
-            rdy_rs = fh.ready_small_first()
-            if rdy_rs:
-                batch = fh.get_batch(rs)
-                eta = fh.estimate_processing_time(rs, len(batch))
-                ptime = t + eta/speed_factor
-    for rs in rsl_list:
-        batch = fh.get_batch(rs)
-        while batch:
-            eta = fh.estimate_processing_time(rs, len(batch))
-            ptime = t + eta/speed_factor
-            batch, _ = fh.get_batch(rs)
-    print(ptime)
+    fh.set_ready_method('early')
     
-    # schedule - early first
-    fh=FrameHolder(rsl_list, bs, dl, mat_pt)
-    ptime = 0.0
+    loads, rest_load, delays, loads_detail = simulate_process(tasks, fh, nlength, speed_factor)
+    
+    methods = ['early', 'small', 'finish']
+    loads8 = np.zeros((4, nlength))
+    rloads8 = np.zeros(4)
+    delays8 = np.zeros(4)
+    for i, m in enumerate(methods):
+        fh.set_ready_method(m)
+        #loads_detail: (ptime, rdy_rs, len(batch), load, fh.query_queue_length_as_list())
+        loads, rest_load, delays, loads_detail = simulate_process(tasks, fh, nlength, speed_factor)
+        loads8[i]=loads
+        rloads8[i] = rest_load
+        delays8[i] = delays.sum(1).mean()
+    plt.plot(util.moving_average(loads8[:3], 10).T)
+    plt.plot(util.moving_average(opt_loads.sum(0), 10).T, '--')
+    plt.ylim((-1,None))
+    plt.legend(methods+['opt'])
+    
+    # analyze queue length
+    queuelenght = np.zeros((len(rsl_list), nlength))
+    num_process = np.zeros(nlength)
+    for t, rs, bs, load, ql in loads_detail:
+        ind_t = int(t)
+        queuelenght[:,ind_t] += ql
+        num_process[ind_t] += 1
+    queuelenght /= num_process
+    print((queuelenght<bs).mean(1))
+    
+    plt.hist(queuelenght.T)
+    
+    # approximate delay and usage
+    delay,usage=profiling.get_delay_usage_with_bound(loads, capacity, 1)
+    
