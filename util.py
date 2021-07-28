@@ -90,27 +90,40 @@ def sample_data(data, period, slength, pos='tail'):
             res.append(t)
     return np.array(res)
 
-def pad_with_sample(data, period, slength=1, off=0, pos='middle', line=True):
-    vidx=sample_index(len(data[off:]), period, slength, pos)+off
+def sample_and_pad(data, period, slength=1, off=0, pos='middle', padvalue='same'):
+    assert pos in ['head', 'middle', 'tail']
+    assert padvalue == 'same' or isinstance(padvalue, (int, float)) # np.nan is float
     vdata=sample_data(data[off:], period, slength, pos)
-    if line == False:
-        pad=np.zeros_like(data)+np.nan
-        pad[vidx] = vdata
+    return pad_by_sample(vdata, len(data), period, slength, off,pos, padvalue)
+
+def pad_by_sample(data, n, period, slength, off=0, pos='middle', padvalue='same'):
+    assert pos in ['head', 'middle', 'tail']
+    assert padvalue == 'same' or isinstance(padvalue, (int, float)) # np.nan is float
+    vidx=sample_index(n-off, period, slength, pos)+off
+    assert data.ndim == 1 and slength == 1 and data.shape == (len(vidx),) or \
+        data.ndim == 2 and data.shape == (len(vidx), slength)
+    if padvalue != 'same':
+        pad = np.zeros(n) + padvalue
+        if data.ndim == 1:
+            pad[vidx] = data.reshape((-1, 1))
+        else:
+            pad[vidx] = data
     else:
-        pad=np.zeros_like(data)
+        pad=np.zeros(n)
         if pos == 'head':
-            vidx2=np.pad(vidx.ravel(),(0,1),constant_values=len(data))
+            vidx2=np.pad(vidx.ravel(),(0,1),constant_values=n)
             vidx2[0]=0
         elif pos == 'middle':
             vidx2 = vidx.ravel().copy()
             vidx2 = [(vidx2[i]+vidx2[i+1])//2 for i in range(len(vidx2)-1)]
-            vidx2=np.pad(vidx2,1,constant_values=(0, len(data)))
+            vidx2=np.pad(vidx2,1,constant_values=(0, n))
         else:
             vidx2=np.pad(vidx.ravel(),(1,0),constant_values=0)
-            vidx2[-1]=len(data)
-        for i in range(len(vidx2)-1):
-            pad[vidx2[i]:vidx2[i+1]]=vdata[i]
-    return pad,vidx
+            vidx2[-1]=n
+        # len(data) == len(vidx2) - 1
+        for i in range(len(data)):
+            pad[vidx2[i]:vidx2[i+1]]=data[i]
+    return pad, vidx
 
 # %%
 
