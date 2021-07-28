@@ -429,7 +429,7 @@ class CarCounter():
     def count_with_raw_boxes(self, boxes, fr=None):
         fps = int(np.ceil(self.video.fps))
         if fr is None:
-            fr = self.conf.fr
+            fr = self.fr
         else:
             self.change_fr(fr)
         n_second = len(boxes) // fps
@@ -493,7 +493,7 @@ class CarCounter():
         # ctimes, counts, gtruth: second level
         # segment: number of seconds in each segment
         fps = int(np.ceil(self.video.fps))
-        pattern = np.arange(0, fps, self.conf.fr)
+        pattern = np.arange(0, fps, self.fr)
         n_second = len(ptimes) // fps
         #n_segment = n_second // segment
         #n = n_segment * segment * fps
