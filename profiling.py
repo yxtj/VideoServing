@@ -43,6 +43,7 @@ def generate_conf(cc, video, pbox_files, ground_truth,
     #conf_param = np.zeros(shape[:2], int)
     conf_times = np.zeros(shape)
     conf_accuracy = np.zeros(shape)
+    conf_counts = np.zeros(shape, int)
     
     for i in range(len(rs_list)):
         rs = rs_list[i]
@@ -52,7 +53,6 @@ def generate_conf(cc, video, pbox_files, ground_truth,
         data = carcounter.load_precompute_data(pbfile)
         ptimes = data[3]
         pboxes = data[4]
-        cc.conf.rs = rs
         for j in range(len(fr_list)):
             fr = fr_list[j]
             cc.change_fr(fr)
@@ -63,25 +63,30 @@ def generate_conf(cc, video, pbox_files, ground_truth,
                 ptimes, ctimes, counts, ground_truth, segment_length)
             conf_times[i,j] = times
             conf_accuracy[i,j] = accuacy
-    return conf_times, conf_accuracy
+            c = counts[:n_segment*segment_length].reshape((n_segment,segment_length))
+            c = c.sum(1)
+            conf_counts[i,j] = c
+    return conf_times, conf_accuracy, conf_counts
 
 
 def generate_configurations(cc, video, pbox_files, ground_truth,
                             sg_list, fr_list, rs_list):
     cts = []
     cas = []
+    ccs = []
     for sg in sg_list:
-        ct, ca = generate_conf(cc, video, pbox_files, ground_truth,
+        ct, ca, cn = generate_conf(cc, video, pbox_files, ground_truth,
                                sg, fr_list, rs_list)
         cts.append(ct)
         cas.append(ca)
-    return cts, cas
+        ccs.append(cn)
+    return cts, cas, ccs
     
 
 def save_configurations(file, fr_list, rs_list, sg_list, 
-                        ctime_list, caccuracy_list):
+                        ctime_list, caccuracy_list, ccount_list):
     n = len(sg_list)
-    t = {sg_list[i]: (ctime_list[i], caccuracy_list[i]) for i in range(n)}
+    t = {sg_list[i]: (ctime_list[i], caccuracy_list[i], ccount_list[i]) for i in range(n)}
     np.savez(file, fr_list=fr_list, rs_list=rs_list, 
              sg_list=np.array(sg_list, int), confs=t)
     
@@ -95,11 +100,13 @@ def load_configurations(file):
         conf = data['confs'].item()
         cts = []
         cas = []
+        ccs = []
         for sg in sg_list:
-            ct, ca = conf[sg]
+            ct, ca, cc = conf[sg]
             cts.append(ct)
             cas.append(ca)
-        return fr_list, rs_list, sg_list, cts, cas
+            ccs.append(cc)
+        return fr_list, rs_list, sg_list, cts, cas, ccs
                     
 # %% profile
 
@@ -323,18 +330,18 @@ def __test_show_profile__():
     import detect.yolowrapper as yolowrapper
     
     v1=videoholder.VideoHolder('E:/Data/video/s3.mp4')
-    rng=carcounter.CheckRange('h',0.5,0.1,0.08)
+    rng=carcounter.RangeChecker('h',0.5,0.1,0.08)
     model=yolowrapper.YOLO_torch('yolov5s',0.5,(2,3,5,7))
     
     fps = int(v1.fps)
     # fps = 25
     
     cc=carcounter.CarCounter(v1,rng,model,480,1)
-    box_files = ['data/s3-raw-%d.npz'%r for r in RS]
+    box_files = ['data/s3/s3-raw-%d.npz'%r for r in RS]
     segment_length = 5
     
     # get and show profile (accuracy requirement: 0.9)
-    ct,ca=generate_conf(cc, v1, box_files, 'data/ground-truth-s3.txt',
+    ct,ca,cn=generate_conf(cc, v1, box_files, 'data/s3/ground-truth-s3.txt',
                         segment_length, FR_FOR_25, RS)
     pt,pa,ps=get_profile_bound_acc(ct,ca,0.9)
     show_selection(pt,pa,ps,FR_FOR_25,RS,25,True)
@@ -352,6 +359,25 @@ def __test_show_profile__():
         show_delay_usage(pt,delay,usage,bound,None,
                          'time (s)','percentile-%d'%q,None,False)
     
+    # generate conf file for all videos
+    fps_list = [25,30,20,30]
+    vn_list = ['s3', 's4', 's5', 's7']
+    sg_list = [1,2,5,10]
+    for i,(vn,fps) in enumerate(zip(vn_list,fps_list)):
+        box_files = ['data/%s/%s-raw-%d.npz'%(vn,vn,r) for r in RS]
+        gt_file = 'data/%s/ground-truth-%s.txt'%(vn,vn)
+        gt = np.loadtxt(gt_file, int, delimiter=',')
+        if fps_list == 20:
+            fr_list = FR_FOR_20
+        elif fps_list == 25:
+            fr_list = FR_FOR_25
+        else:
+            fr_list = FR_FOR_30
+        v = videoholder.VideoHolder('E:/Data/video/%s.mp4'%vn)
+        cts,cas,ccs=generate_configurations(cc, v, box_files, gt, sg_list, fr_list, RS)
+        conf_file = 'data/%s/conf.npz'%vn
+        save_configurations(conf_file, fr_list, RS, sg_list, cts, cas, ccs)
+    
     # multiple videos
     vn_list = ['s3', 's4', 's5', 's7']
     segment = 1
@@ -365,7 +391,7 @@ def __test_show_profile__():
     pas=[]
     pss=[]
     for i,vn in enumerate(vn_list):
-        _,_,sg_list,cts,cas=load_configurations('data/%s/conf-%s.npz' % (vn,vn))
+        _,_,sg_list,cts,cas,_=load_configurations('data/%s/conf-%s.npz' % (vn,vn))
         sg_idx=sg_list.tolist().index(segment)
         pt,pa,ps=get_profile_bound_acc(cts[sg_idx],cas[sg_idx],0.9)
         pts.append(pt)
@@ -399,7 +425,7 @@ def __test_show_profile__():
     i = 2
     pt, pa = pts[i], pas[i]
     #vn = vn_list[i]
-    #_,_,sg_list,cts,cas=load_configurations('data/%s/conf-%s.npz' % (vn,vn))
+    #_,_,sg_list,cts,cas,_=load_configurations('data/%s/conf-%s.npz' % (vn,vn))
     #pt, pa = cts[0][3,0,:], cas[0][3,0,:]
     
     plt.figure()
@@ -536,7 +562,7 @@ def __test_show_profile__():
     
     i=2
     vn=vn_list[i]
-    _,_,sg_list,cts,cas=load_configurations('data/%s/conf-%s.npz' % (vn,vn))
+    _,_,sg_list,cts,cas,_=load_configurations('data/%s/conf-%s.npz' % (vn,vn))
     pag = cas[0][3,0]
     #pag = cas[0].reshape(24,-1).max(0)
     pa = pas[i]
@@ -550,10 +576,10 @@ def __test_show_profile__():
     #pad[util.sample_index(len(pag)+off,30,1)]=util.sample_data(moving_average(pag,10)[off:],30,1)
     
     # pick 1 second every 30 second
-    pad,vidx=util.pad_with_sample(moving_average(pag, 10), 30, 1, off, 'middle', True)
+    pad,vidx=util.sample_and_pad(moving_average(pag, 10), 30, 1, off, 'middle', 'same')
     pad2=np.zeros_like(pad)+np.nan
     pad2[vidx]=pad[vidx]
-    #pad,_=util.pad_with_sample(moving_average(pag, 10), 30, 1, off, 'middle', False)
+    #pad,_=util.sample_and_pad(moving_average(pag, 10), 30, 1, off, 'middle', np.nan)
 
     #t=np.array([moving_average(pa, 10), moving_average(pag, 10)])
     plt.figure()
@@ -571,7 +597,7 @@ def __test_show_profile__():
     
     plt.figure()
     for i,prd in enumerate([15,30,60]):
-        pad,vidx = util.pad_with_sample(moving_average(pag, 10), prd, 1, 0, 'middle', True)
+        pad,vidx = util.sample_and_pad(moving_average(pag, 10), prd, 1, 0, 'middle', 'same')
         pad2=np.zeros_like(pad)+np.nan
         pad2[vidx]=pad[vidx]
         plt.subplot2grid((3,1),(i,0))
