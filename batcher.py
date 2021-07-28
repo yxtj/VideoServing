@@ -12,7 +12,7 @@ FrameInfo = namedtuple('FrameInfo', ['jid', 'sid', 'fid', 'time'])
 
 class FrameHolder():
     
-    def __init__(self, rsl_list, bs, max_dl, mat_pt):
+    def __init__(self, rsl_list, bs, mat_pt, policy='small'):
         self.rsl_list = rsl_list
         self.rsl_index = { rs:i for i,rs in enumerate(rsl_list) }
         
@@ -21,14 +21,14 @@ class FrameHolder():
         self.infos = { rs:[] for rs in rsl_list }
         
         self.batchsize = bs
-        self.max_delay = max_dl
         self.process_time = mat_pt
         if mat_pt is not None:
             assert mat_pt.ndim == 2 and mat_pt.shape[0] == len(rsl_list)
             self.max_pbs = mat_pt.shape[1]
             assert self.max_pbs >= bs
         
-        self.set_ready_method('small')
+        self.set_ready_method(policy)
+        
     
     def clear(self):
         self.queues = { rs:[] for rs in self.rsl_list }
@@ -120,6 +120,7 @@ class FrameHolder():
 
     def set_ready_method(self, m):
         assert m in ['early', 'small', 'finish']
+        self.policy = m
         if m == 'early':
             self.ready = lambda now: self.ready_early_first()
         elif m == 'small':
@@ -555,7 +556,7 @@ def __test3__():
     pas=[]
     pss=[]
     for i,vn in enumerate(vn_list):
-        _,_,sg_list,cts,cas=profiling.load_configurations('data/%s/conf-%s.npz' % (vn,vn))
+        _,_,sg_list,cts,cas,ccs=profiling.load_configurations('data/%s/conf-%s.npz' % (vn,vn))
         sg_idx=sg_list.tolist().index(segment)
         pt,pa,ps=profiling.get_profile_bound_acc(cts[sg_idx],cas[sg_idx],0.9)
         pts.append(pt)
@@ -588,6 +589,11 @@ def __test3__():
     w,smy = simulate_workloads(nsource, nlength, distr_rsl, cdistr_rsl_fps, fps_list)
     assert w.shape == (nsource, nlength, 2)
     tasks = workload_to_tasks(w, rsl_list, 30)
+    
+    np.savez('data/simulated-workload-10',w=w,smy=smy)
+    data=np.load('data/simulated-workload-10.npz',allow_pickle=True)
+    w=data['w']; smy=data['smy']
+    data.close()
     
     opt_loads,opt_rest,opt_delays = optimal_process(tasks, rsl_list, bs, mat_pt)
     print(opt_loads.mean(1), opt_rest, opt_delays.mean(0))
@@ -626,16 +632,21 @@ def __test3__():
     plt.legend(methods+['opt'])
     
     # analyze queue length
-    queuelenght = np.zeros((len(rsl_list), nlength))
+    queuelength = np.zeros((len(rsl_list), nlength))
     num_process = np.zeros(nlength)
     for t, rs, bs, load, ql in loads_detail:
         ind_t = int(t)
-        queuelenght[:,ind_t] += ql
+        queuelength[:,ind_t] += ql
         num_process[ind_t] += 1
-    queuelenght /= num_process
-    print((queuelenght<bs).mean(1))
+    queuelength /= num_process
+    print((queuelength<bs).mean(1))
     
-    plt.hist(queuelenght.T)
+    plt.figure()
+    plt.hist(queuelength.T, 8)
+    plt.legend(rsl_list)
+    plt.xlabel('queue length')
+    plt.ylabel('number')
+    plt.tight_layout()
     
     # approximate delay and usage
     delay,usage=profiling.get_delay_usage_with_bound(loads, capacity, 1)
