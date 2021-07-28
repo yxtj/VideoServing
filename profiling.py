@@ -90,7 +90,7 @@ def save_configurations(file, fr_list, rs_list, sg_list,
     np.savez(file, fr_list=fr_list, rs_list=rs_list, 
              sg_list=np.array(sg_list, int), confs=t)
     
-def load_configurations(file):
+def load_configurations(file, ver=1):
     if not file.endswith('.npz'):
         file += '.npz'
     with np.load(file, allow_pickle=True) as data:
@@ -102,10 +102,14 @@ def load_configurations(file):
         cas = []
         ccs = []
         for sg in sg_list:
-            ct, ca, cc = conf[sg]
+            if ver==1:
+                ct, ca = conf[sg]
+            else:
+                ct, ca, cc = conf[sg]
             cts.append(ct)
             cas.append(ca)
-            ccs.append(cc)
+            if ver>1:
+                ccs.append(cc)
         return fr_list, rs_list, sg_list, cts, cas, ccs
                     
 # %% profile
@@ -367,9 +371,9 @@ def __test_show_profile__():
         box_files = ['data/%s/%s-raw-%d.npz'%(vn,vn,r) for r in RS]
         gt_file = 'data/%s/ground-truth-%s.txt'%(vn,vn)
         gt = np.loadtxt(gt_file, int, delimiter=',')
-        if fps_list == 20:
+        if fps == 20:
             fr_list = FR_FOR_20
-        elif fps_list == 25:
+        elif fps == 25:
             fr_list = FR_FOR_25
         else:
             fr_list = FR_FOR_30
