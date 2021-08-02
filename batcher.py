@@ -3,213 +3,13 @@
 import numpy as np
 import time
 from collections import namedtuple
-from threading import Lock
 
-Configure = namedtuple('Configure', ['rs', 'fr', 'roi', 'model'])
-FrameInfo = namedtuple('FrameInfo', ['tid', 'jid', 'sid', 'fid', 'time'])
+from frameholder import FrameHolder
+#Configure = namedtuple('Configure', ['rs', 'fr', 'roi', 'model'])
+#FrameInfo = namedtuple('FrameInfo', ['tid', 'jid', 'sid', 'fid', 'time'])
+from frameholder import Configure
+#from frameholder import FrameInfo
 
-# next: add queues for different models
-
-class FrameHolder():
-    
-    def __init__(self, rsl_list, bs, mat_pt, policy='come'):
-        self.rsl_list = rsl_list
-        self.rsl_index = { rs:i for i,rs in enumerate(rsl_list) }
-        
-        self.locks = { rs:Lock() for rs in rsl_list }
-        self.queues = { rs:[] for rs in rsl_list }
-        self.infos = { rs:[] for rs in rsl_list }
-        
-        self.batchsize = bs
-        self.process_time = mat_pt
-        if mat_pt is not None:
-            assert mat_pt.ndim == 2 and mat_pt.shape[0] == len(rsl_list)
-            self.max_pbs = mat_pt.shape[1]
-            assert self.max_pbs >= bs
-        
-        self.set_ready_method(policy)
-        self.tid_lock = Lock()
-        self.tid = 0
-        
-    
-    def clear(self):
-        self.queues = { rs:[] for rs in self.rsl_list }
-        self.infos = { rs:[] for rs in self.rsl_list }
-        self.tid = 0
-
-    def put(self, frame:np.ndarray, jobID:int, stmID:int, frmID:int,
-            conf:Configure, t:float=None):
-        rs = conf.rs
-        assert rs in self.rsl_list
-        t = t if t is not None else time.time()
-        with self.tid_lock:
-            tid = self.tid
-            self.tid += 1
-        with self.locks[rs]:
-            self.queues[rs].append(frame)
-            self.infos[rs].append(FrameInfo(tid, jobID, stmID, frmID, t))
-        return len(self.queues[rs])
-    
-    def empty(self, rs=None):
-        if rs is None:
-            return np.all([len(v) == 0 for k,v in self.queue.items()])
-        else:
-            return len(self.queue[rs]) == 0
-    
-    def estimate_processing_time(self, rs, n):
-        ind = self.rsl_index[rs]
-        return self.process_time[ind][min(n, self.max_pbs)-1]*n
-    
-    # info query functions
-    
-    def query_queue_length(self, rs=None):
-        if rs is None:
-            return { k:len(q) for k,q in self.queues.items() }
-        else:
-            return self.queues[rs]
-
-    def query_queue_length_as_list(self):
-        l = np.zeros(len(self.rsl_list), int)
-        for i, rs in enumerate(self.rsl_list):
-            l[i] = len(self.queues[rs])
-        return l
-    
-    def query_waiting_time(self, rs=None, now=None):
-        if now is None:
-            now = time.time()
-        if rs is None:
-            return { k:0 if len(q)==0 else q[0].time - now for k,q in self.infos.items() }
-        else:
-            iq = self.infos[rs]
-            return 0 if len(iq) == 0 else iq[0].time - now
-    
-    def query_waiting_time_as_list(self, now=None):
-        if now is None:
-            now = time.time()
-        l = np.zeros(len(self.rsl_list), int)
-        for i, rs in enumerate(self.rsl_list):
-            q = self.info[rs]
-            l[i] = 0 if len(q)==0 else q[0].time - now
-        return l
-    
-    # find ready queue        
-    
-    def ready_come_first(self):
-        t = [info[0].time if len(info)>=self.batchsize else np.inf 
-             for rs,info in self.infos.items()]
-        ind = np.argmin(t)
-        if np.isinf(t[ind]):
-            return None
-        return self.rsl_list[ind]
-    
-    def ready_small_first(self):
-        for rs in self.rsl_list:
-            q = self.queues[rs]
-            if len(q) >= self.batchsize:
-                return rs
-        else:
-            return None
-   
-    def ready_finish_first(self, now=None):
-        if now is None:
-            now = time.time()
-        etds = np.zeros(len(self.rsl_list)) + np.inf
-        for i, rs in enumerate(self.rsl_list):
-            info = self.infos[rs]
-            if len(info) >= self.batchsize:
-                etds[i] = now - info[0].time
-                etds[i] += self.estimate_processing_time(rs, min(self.batchsize, len(info)))
-        ind = etds.argmin()
-        if np.isinf(etds[ind]):
-            return None
-        return self.rsl_list[ind]
-
-    def ready_max_delay_first(self, now=None):
-        if now is None:
-            now = time.time()
-        etds = np.zeros(len(self.rsl_list)) - np.inf
-        for i, rs in enumerate(self.rsl_list):
-            info = self.infos[rs]
-            # may not be a full batch
-            if len(info) >= 1:
-                etds[i] = now - info[0].time
-                etds[i] += self.estimate_processing_time(rs, min(self.batchsize, len(info)))
-        ind = etds.argmax()
-        if np.isinf(etds[ind]):
-            return None
-        return self.rsl_list[ind]
-
-    def set_ready_method(self, m):
-        assert m in ['come', 'small', 'finish', 'delay']
-        self.policy = m
-        if m == 'come':
-            self.ready = lambda now: self.ready_come_first()
-        elif m == 'small':
-            self.ready = lambda now: self.ready_small_first()
-        elif m == 'finish':
-            self.ready = self.ready_finish_first
-        elif m == 'delay':
-            self.ready = self.ready_max_delay_first
-        
-    # data get functions
-    
-    def get_batch(self, rs):
-        res_f = None
-        res_i = None
-        if len(self.queues[rs]) > 0:
-            with self.locks[rs]:
-                res_f = self.queues[rs][:self.batchsize]
-                res_i = self.infos[rs][:self.batchsize]
-                del self.queues[rs][:self.batchsize]
-                del self.infos[rs][:self.batchsize]
-        return res_f, res_i
-    
-    def get_queue(self, rs):
-        res_f = None
-        res_i = None
-        if len(self.queues[rs]) > 0:
-            with self.locks[rs]:
-                res_f = self.queues[rs]
-                res_i = self.infos[rs]
-                self.queues[rs] = []
-                self.infos[rs] = []
-        return res_f, res_i
-    
-    # -- inner functions --
-    
-    def __fast_queue_length__(self):
-        res = np.zeros(len(self.rsl_list), int)
-        for i, (rs, q) in enumerate((self.queues.items())):
-            res[i] = len(q)
-        return res
-    
-    def __estimated_delay_one__(self, rs, now):
-        q = self.queues[rs]
-        n = len(q)
-        if n > 0:
-            ind_rs = self.rsl_index[rs]
-            f = self.infos[rs]
-            etd = now - f[0].time
-            etd += self.process_time[ind_rs][min(n, self.batchsize)-1]*n
-        else:
-            etd = 0.0
-        return etd
-    
-    def __estimated_delays__(self):
-        t = time.time()
-        etds = np.zeros(len(self.rsl_list))
-        for i, rs in enumerate(self.rsl_list):
-            q = self.queues[rs]
-            n = len(q)
-            if n > 0:
-                f = self.infos[rs]
-                etd = t - f[0].time
-                etd += self.process_time[i][min(n, self.batchsize)-1]*n
-                etds[i] = etd
-        return etds
-    
-    
-# %% test utils
 
 Task = namedtuple('Task', ['time', 'frame', 'jid', 'sid', 'fid', 'rs', 'fr'])
 
@@ -270,7 +70,7 @@ def workload_to_tasks(workload, rsl_list, max_fps=30):
                 continue
             fr = int(max_fps/nf)
             for k in range(nf):
-                t = i + 1.0/30*k*fr
+                t = i + 1.0/nf*k
                 tasks.append((t, j, fr, ind_rs))
         tasks.sort(key=lambda v:v[0])
         for t, sid, fr, ind_rs in tasks:
@@ -352,204 +152,101 @@ def simulate_process(tasks, fh, nlength, speed_factor):
     return loads, rest_load, delays, loads_detail
 
 
+# %% plot for test
+
+def show_delay_distribution(delays, nbin=100, cdf=True, bar=False, newfig=True):
+    d=delays[:,1:].sum(1)
+    hh,xh=np.histogram(d, nbin)
+    x = (xh[1:]+xh[:-1])/2
+    h = hh / hh.sum()
+    
+    if newfig:
+        plt.figure()
+    if cdf:
+        if bar:
+            plt.bar(xh, plt.plot(xh, np.pad(np.cumsum(h), (1,0))), x[1]-x[0])
+        else:
+            plt.plot(xh, np.pad(np.cumsum(h), (1,0)))
+    else:
+        if bar:
+            plt.bar(x, h, x[1]-x[0]) # x[1]-x[0] is the width
+        else:
+            plt.plot(x, h)
+    plt.xlabel('delay (s)')
+    if cdf:
+        plt.ylabel('CDF')
+    else:
+        plt.ylabel('PDF')
+    plt.tight_layout()
+
+def show_delay_distribution_cmp(delays_list, legends=None, select_idx=None,
+                                nbin=100, newfig=True):
+    dly_max = max([d[:,1:].sum(1).max() for d in delays_list])
+    if select_idx is None:
+        select_idx = list(range(len(delays_list)))
+    if newfig:
+        plt.figure()
+    for i in select_idx:
+        d = delays_list[i][:,1:].sum(1)
+        hh,xh=np.histogram(d, nbin, (0, dly_max))
+        h = hh / hh.sum()
+        plt.plot(xh, np.pad(np.cumsum(h), (1,0)))
+    if legends:
+        plt.legend([legends[i] for i in select_idx])
+    plt.xlabel('delay (s)')
+    plt.ylabel('CDF')
+    plt.tight_layout()
+
+def show_delay_overtime(delays, tasks, rsl_list, nlength, newfig=True):
+    delay_ot = np.zeros((len(rsl_list), nlength))
+    ntask_ot = np.zeros((len(rsl_list), nlength), int)
+    for tid, dq, dp in delays:
+        tid = int(np.round(tid))
+        rs = tasks[tid].rs
+        rid = rsl_list.index(rs)
+        pid = int(tasks[tid].time)
+        delay_ot[rid, pid] += dq+dp
+        ntask_ot[rid, pid] += 1
+    ntask_ot[ntask_ot==0] = 1 # prevent warning of divided by zero
+    ad = delay_ot/ntask_ot
+    if newfig:
+        plt.figure()
+    #plt.plot(ad.sum(0))
+    plt.plot(util.moving_average(ad.sum(0),10))
+    plt.xlabel('time')
+    plt.ylabel('delay (s)')
+    plt.tight_layout()
+
+
+def show_delay_overtime_cmp(delays_list, tasks, rsl_list, nlength,
+                            legends=None, select_idx=None, newfig=True):
+    if newfig:
+        plt.figure()
+    if select_idx is None:
+        select_idx = list(range(len(delays_list)))
+    for i in select_idx:
+        delay_ot = np.zeros((len(rsl_list), nlength))
+        ntask_ot = np.zeros((len(rsl_list), nlength), int)
+        for tid, dq, dp in delays_list[i]:
+            tid = int(np.round(tid))
+            rs = tasks[tid].rs
+            rid = rsl_list.index(rs)
+            pid = int(tasks[tid].time)
+            delay_ot[rid, pid] += dq+dp
+            ntask_ot[rid, pid] += 1
+        ntask_ot[ntask_ot==0] = 1 # prevent warning of divided by zero
+        ad = delay_ot/ntask_ot
+        plt.plot(util.moving_average(ad.sum(0),10))
+    plt.legend([legends[i] for i in select_idx])
+    plt.xlabel('time')
+    plt.ylabel('delay (s)')
+    plt.tight_layout()
+        
 # %% test
 import matplotlib.pyplot as plt
 import util
 
 def __test__():
-    rsl_list=[240,360,480,720]
-    bs=5
-    dl=1.0
-    mat_pt = np.exp(-np.array([1,1.5,2,2.5,3]))+np.array([1,2,3,4]).reshape(4,1)
-    
-    fh=FrameHolder(rsl_list,bs,dl,mat_pt)
-    for i in range(5):
-        rs=480
-        fh.put(np.zeros(rs,rs),0,0,i,Configure(rs,2,False,'yolov5m'))
-        rs=240
-        fh.put(np.zeros(rs,rs),0,0,i,Configure(rs,2,False,'yolov5m'))
-    
-    print(fh.__queue_length__())
-    print(fh.__estimated_delays__())
-    
-    r = fh.get()
-    assert r is not None
-    print(len(r[0]), r[1], r[0][0].shape)
-    
-    r = fh.get()
-    assert r is not None
-    print(len(r[0]), r[1], r[0][0].shape)
-
-def __test2__():
-    rsl_list=[240,360,480,720]
-    bs=8
-    dl=2.0
-    mat_pt=np.array([[52,37,28,25,22,27,25,24],
-        [98,70,61,60,59,60,60,59],
-        [154,131,110,115,110,105,101,96],
-        [358,271,226,210,211,212,208,204]])*0.001
-    
-    fh=FrameHolder(rsl_list,bs,dl,mat_pt)
-    
-    import profiling
-    vn_list = ['s3', 's4', 's5', 's7']
-    fps_list = [25,30,20,30]
-    segment = 1
-    
-    pts=[]
-    pas=[]
-    pss=[]
-    for i,vn in enumerate(vn_list):
-        _,_,sg_list,cts,cas=profiling.load_configurations('data/%s/conf-%s.npz' % (vn,vn))
-        sg_idx=sg_list.tolist().index(segment)
-        pt,pa,ps=profiling.get_profile_bound_acc(cts[sg_idx],cas[sg_idx],0.9)
-        pts.append(pt)
-        pas.append(pa)
-        pss.append(ps)
-    
-    nlength = 400
-    workload = np.zeros((len(vn_list), nlength, 2), int)
-    for i, fps in enumerate(fps_list):
-        if fps == 20:
-            fr_list = profiling.FR_FOR_20
-        elif fps == 25:
-            fr_list = profiling.FR_FOR_25
-        else:
-            fr_list = profiling.FR_FOR_30
-        for j, (ind_rs, ind_fr) in enumerate(pss[i]):
-            #rs = rsl_list[ind_rs]
-            nf = int(fps/fr_list[ind_fr])
-            k = 0
-            x = j + len(pss[i])*k
-            while x < nlength:
-                workload[i, x] = (ind_rs, nf)
-                k += 1
-                x = j + len(pss[i])*k
-    
-    # batching comparision
-    
-    bs=5
-    
-    # no batching
-    loads = np.zeros(nlength)
-    for i in range(len(vn_list)):
-        for j in range(nlength):
-            ind_rs = workload[i,j,0]
-            rs = rsl_list[ind_rs]
-            nf = workload[i,j,1]
-            loads[j] += mat_pt[ind_rs,0]*nf
-    
-    import profiling
-    loads = profiling.simulate_workloads(pts, nlength)
-    
-    delays,_=profiling.get_delay_usage_with_bound(loads, 1.0, 1)
-    
-    # queue length only
-    loads = np.zeros(nlength)
-    fh=FrameHolder(rsl_list, bs, dl, mat_pt)
-    fids = [0 for _ in range(len(vn_list))]
-    for i in range(nlength):
-        tasks = []
-        for j in range(len(vn_list)):
-            ind_rs = workload[j,i,0]
-            rs = rsl_list[ind_rs]
-            nf = workload[j,i,1]
-            if nf == 0:
-                continue
-            fr = int(fps_list[j]/nf)
-            for k in range(nf):
-                t = i + (nf/30)*k
-                tasks.append((t, j, fr, ind_rs))
-        tasks.sort(key=lambda v:v[0])
-        for t, sid, fr, ind_rs in tasks:
-            rs = rsl_list[ind_rs]
-            n = fh.put(np.zeros((int(rs/9*16),rs)), 0, sid, fids[sid], Configure(rs, fr, False, 'yolov5m'))
-            fids[sid] += 1
-            if n >= bs:
-                d, _ = fh.get_queue(rs)
-                loads[i] += mat_pt[ind_rs, min(n, bs)-1]*n
-    for ind_rs, rs in enumerate(rsl_list):
-        d, _ = fh.get_queue(rs)
-        if d is not None:
-            n = len(d)
-            loads[-1] += mat_pt[ind_rs, min(n, bs)-1]*n
-    
-    delays,_=profiling.get_delay_usage_with_bound(loads, 1.0, 1)
-    
-    # queue length + delay
-    loads = np.zeros(nlength)
-    fh=FrameHolder(rsl_list, bs, dl, mat_pt)
-    fids = [0 for _ in range(len(vn_list))]
-    for i in range(nlength):
-        tasks = []
-        for j in range(len(vn_list)):
-            ind_rs = workload[j,i,0]
-            rs = rsl_list[ind_rs]
-            nf = workload[j,i,1]
-            if nf == 0:
-                continue
-            fr = int(fps_list[j]/nf)
-            for k in range(nf):
-                t = i + (nf/30)*k
-                tasks.append((t, j, fr, ind_rs))
-        tasks.sort(key=lambda v:v[0])
-        for t, sid, fr, ind_rs in tasks:
-            rs = rsl_list[ind_rs]
-            n = fh.put(np.zeros((int(rs/9*16),rs)), 0, i, fids[sid], Configure(rs, fr, False, 'yolov5m'), t)
-            if n >= bs or t - fh.infos[rs][0].time >= dl:
-                d, _ = fh.get_queue(rs)
-                loads[i] += mat_pt[ind_rs, min(n, bs)-1]*n
-    for ind_rs, rs in enumerate(rsl_list):
-        d, _ = fh.get_queue(rs)
-        if d is not None:
-            n = len(d)
-            loads[-1] += mat_pt[ind_rs, min(n, bs)-1]*n
-
-                    
-    # estimated delay
-    loads = np.zeros(nlength)
-    fh=FrameHolder(rsl_list, bs, dl, mat_pt)
-    fids = [0 for _ in range(len(vn_list))]
-    for i in range(nlength):
-        tasks = []
-        for j in range(len(vn_list)):
-            ind_rs = workload[j,i,0]
-            rs = rsl_list[ind_rs]
-            nf = workload[j,i,1]
-            if nf == 0:
-                continue
-            fr = int(fps_list[j]/nf)
-            for k in range(nf):
-                t = i + (nf/30)*k
-                tasks.append((t, j, fr, ind_rs))
-        tasks.sort(key=lambda v:v[0])
-        for t, sid, fr, ind_rs in tasks:
-            rs = rsl_list[ind_rs]
-            n = fh.put(np.zeros((int(rs/9*16),rs)), 0, i, fids[sid], Configure(rs, fr, False, 'yolov5m'), t)
-        etds = fh.__estimated_delays__()
-        qls = fh.__queue_length__()
-        indexes = sorted(np.arange(len(rsl_list)), key=lambda i:etds[i])
-        for ind in indexes:
-            if qls[ind] >= bs:
-                d, _ = fh.get_queue(rs)
-                loads[i] += mat_pt[ind_rs, min(n, bs)-1]*n
-    for ind_rs, rs in enumerate(rsl_list):
-        d, _ = fh.get_queue(rs)
-        if d is not None:
-            n = len(d)
-            loads[-1] += mat_pt[ind_rs, min(n, bs)-1]*n
-
-    # plot
-    import matplotlib.pyplot as plt
-    import util
-    
-    plt.figure()
-    plt.plot(util.moving_average(loads, 10))
-    plt.xlabel('time (s)')
-    plt.ylabel('cmp-time (t)')
-    plt.tight_layout()
-
-def __test3__():
     rsl_list=[240,360,480,720]
     bs=8
     mat_pt=np.array([[52,37,28,25,22,27,25,24],
@@ -627,10 +324,14 @@ def __test3__():
     loads, rest_load, delays, loads_detail = simulate_process(tasks, fh, nlength, speed_factor)
     
     methods = ['come', 'small', 'finish', 'delay']
+    legends = ['FCFS', 'QFS', 'FFFS', 'LFFS']
+    
     loads8 = np.zeros((len(methods), nlength))
     rloads8 = np.zeros(len(methods))
     details8 = [None for _ in range(len(methods))]
     delays8 = [None for _ in range(len(methods))]
+    #for bs in [1,2,4,8]:
+    #    fh=FrameHolder(rsl_list, bs, mat_pt, 'finish')
     for i, m in enumerate(methods):
         fh.clear()
         fh.set_ready_method(m)
@@ -653,8 +354,10 @@ def __test3__():
         ind_t = int(t)
         queuelength[:,ind_t] += ql
         num_process[ind_t] += 1
-    queuelength /= num_process
+    queuelength /= num_process # average queue length of each time slot
     print((queuelength<bs).mean(1))
+    
+    ql_max = queuelength.max()
     
     plt.figure()
     plt.hist(queuelength.T, 8)
@@ -663,86 +366,191 @@ def __test3__():
     plt.ylabel('number')
     plt.tight_layout()
     
-    # analyze delay
-    
-    # delay - approximate delay and usage
-    delay,usage=profiling.get_delay_usage_with_bound(loads, capacity, 1)
-    profiling.show_delay_usage(loads, delay, usage, capacity)
-    
-    # delay - total delay distribution
-    d=delays[:,1:].sum(1)
-    hh,xh=np.histogram(d, 100)
-    x = (xh[1:]+xh[:-1])/2
-    h = hh / hh.sum()
-    
     plt.figure()
-    plt.plot(x, h)
-    #plt.bar(x, h, x[1]-x[0]) # x[1]-x[0] is the width
-    plt.xlabel('delay (s)')
-    #plt.ylabel('probability')
+    for ql in queuelength:
+        hh,xh=np.histogram(ql, 30, (0, ql_max))
+        x = (xh[1:]+xh[:-1])/2
+        h = hh / hh.sum()
+        plt.plot(x, h)
+    plt.legend(rsl_list)
+    plt.xlabel('queue length')
     plt.ylabel('PDF')
     plt.tight_layout()
     
-    plt.figure()
-    plt.plot(xh, np.pad(np.cumsum(h), (1,0)))
-    #plt.bar(xh, plt.plot(xh, np.pad(np.cumsum(h), (1,0))), x[1]-x[0])
-    plt.xlabel('delay (s)')
-    plt.ylabel('CDF')
-    plt.tight_layout()
     
-    dly_max = max([d[:,1:].sum(1).max() for d in delays8])
+    # analyze delay
+    
+    # delay - total delay distribution
+    ## pdf
+    show_delay_distribution(delays, 100, False)
+    ## cdf
+    show_delay_distribution(delays, 100, True)
+    ## selected some
     method_idx = [0,1,2,3]
     #method_idx = [0,2]
-    plt.figure()
-    for i in method_idx:
-        d = delays8[i][:,1:].sum(1)
-        hh,xh=np.histogram(d, 100, (0, dly_max))
-        h = hh / hh.sum()
-        plt.plot(xh, np.pad(np.cumsum(h), (1,0)))
-    plt.legend([methods[i] for i in method_idx])
-    plt.xlabel('delay (s)')
-    plt.ylabel('CDF')
-    plt.tight_layout()
-
+    show_delay_distribution_cmp(delays8, legends, method_idx)
+    
+    
     # delay - overtime
-    delay_ot = np.zeros((len(rsl_list), nlength))
-    ntask_ot = np.zeros((len(rsl_list), nlength), int)
-    for tid, dq, dp in delays:
-        tid = int(np.round(tid))
-        rs = tasks[tid].rs
-        rid = rsl_list.index(rs)
-        pid = int(tasks[tid].time)
-        delay_ot[rid, pid] += dq+dp
-        ntask_ot[rid, pid] += 1
-        
-    ad = delay_ot/ntask_ot
-    ad[np.isnan(ad)] = 0
-    plt.figure()
-    #plt.plot(ad.sum(0))
-    plt.plot(util.moving_average(ad.sum(0),10))
-    plt.xlabel('time')
-    plt.ylabel('delay (s)')
-    plt.tight_layout()
+    show_delay_overtime(delays, tasks, rsl_list, nlength)
     
-    plt.figure()
-    for i in method_idx:
-        delay_ot = np.zeros((len(rsl_list), nlength))
-        ntask_ot = np.zeros((len(rsl_list), nlength), int)
-        for tid, dq, dp in delays8[i]:
-            tid = int(np.round(tid))
-            rs = tasks[tid].rs
-            rid = rsl_list.index(rs)
-            pid = int(tasks[tid].time)
-            delay_ot[rid, pid] += dq+dp
-            ntask_ot[rid, pid] += 1
-        ntask_ot[ntask_ot==0] = 1 # prevent warning of divided by zero
-        ad = delay_ot/ntask_ot
-        plt.plot(util.moving_average(ad.sum(0),10))
-    plt.legend([methods[i] for i in method_idx])
-    plt.xlabel('time')
-    plt.ylabel('delay (s)')
-    plt.tight_layout()
+    show_delay_overtime_cmp(delays8, tasks, rsl_list, nlength, method_idx)
+    
+    
+# %% test with multiple kinds of jobs (live, certify, refine)
+
+def generate_certify_tasks(nsource, nlength, period, slength, ctf_conf=(480,10),
+                           interleave=True):
+    assert 1 <= ctf_conf[1] <= 30
+    rs = ctf_conf[0]
+    fr = int(30/ctf_conf[1])
+    tasks = []
+    segs = [[] for _ in range(nsource)]
+    fids = [0 for _ in range(nsource)]
+    for i in range(nsource):
+        if interleave:
+            p = i + period//2
+        else:
+            p = period//2
+        while p + slength - 1 < nlength:
+            segs[i].append(p-period//2)
+            for j in range(slength):
+                for k in range(ctf_conf[1]):
+                    t = p + j + 1.0/ctf_conf[1]*k
+                    tasks.append(Task(t, None, 1, i, fids[i], rs, fr))
+                    fids[i] += 1
+            p += period
+    tasks.sort(key=lambda t:t.time)
+    return segs, tasks
+    
+def generate_refine_tasks(csegs, nlength, period, rrate, rfn_conf=(480,10)):
+    assert 1 <= rfn_conf[1] <= 30
+    rs = rfn_conf[0]
+    fr = int(30/rfn_conf[1])
+    nsource = len(csegs)
+    tasks = []
+    rsegs = [[] for _ in range(nsource)]
+    fids = [0 for _ in range(nsource)]
+    for i, segs in enumerate(csegs):
+        rnds = np.random.random(len(segs))
+        for s, r in zip(segs, rnds):
+            if r >= rrate:
+                continue
+            rsegs[i].append(s)
+            for p in range(s, s+period):
+                for k in range(rfn_conf[1]):
+                    t = p + 1.0/rfn_conf[1]*k
+                    tasks.append(Task(t, None, 2, i, fids[i], rs, fr))
+                    fids[i] += 1
+    tasks.sort(key=lambda t:t.time)
+    return rsegs, tasks
+
+def merge_tasks(ltasks, ctasks, rtasks):
+    tasks = [*ltasks, *ctasks, *rtasks]
+    tasks.sort(key=lambda t:t.time)
+    return tasks
+
+def filter_delays(tasks, delays, jid):
+    idx = delays[:,0].astype(int)
+    flags = np.zeros(len(delays), bool)
+    for i, tid in enumerate(idx):
+        if tasks[tid].jid == jid:
+            flags[i] = True
+    return delays[flags,:]
 
 
+def simulate_proecss_with_cr(tasks, period, slength, ctf_conf, rfn_conf,
+                             fh, nlength, speed_factor):
+    cr_tasks = []
+    ptime = 0.0
+    loads = np.zeros(nlength)
+    loads_detail = []
+    delays = []
+    for i, tsk in enumerate(tasks):
+        # tsk is the next task
+        #(t, frame, jid, sid, fid, rs, fr) = tsk
+        while ptime <= tsk.time:
+            rdy_rs = fh.ready(ptime) # ready is a delegate function for scheduling
+            if rdy_rs:
+                batch,info = fh.get_batch(rdy_rs)
+                load = fh.estimate_processing_time(rdy_rs, len(batch))
+                loads_detail.append((ptime, rdy_rs, len(batch), load, fh.query_queue_length_as_list()))
+                loads[int(ptime)] += load
+                eta = load/speed_factor
+                #print(ptime, rdy_rs, load)
+                for ifo in info:
+                    delays.append((ifo.tid, ptime - ifo.time, eta))
+                    #print(ifo.tid, ifo.sid, ifo.fid, ifo.time)
+                ptime = tsk.time + eta
+            else:
+                break
+        fh.put(tsk.frame, tsk.jid, tsk.sid, tsk.fid, Configure(tsk.rs, tsk.fr, False, 'yolov5m'), tsk.time)
+        ptime = max(ptime, tsk.time)
+    rest_load = 0.0
+    for rs in fh.rsl_list:
+        #while batch_info := fh.get_batch(rs):
+        batch,_ = fh.get_batch(rs)
+        while batch:
+            load = fh.estimate_processing_time(rs, len(batch))
+            rest_load += load
+            batch,_ = fh.get_batch(rs)
+    delays = np.array(delays)
+    print('ft=%.3f rest=%.3f rest_t=%.3f avg_load=%.3f avg_delay=[%.4f %.4f]' %
+          (ptime, rest_load, rest_load/speed_factor, loads.mean(), *delays[:,1:].mean(0)))
+    return loads, rest_load, delays, loads_detail
+
+
+def __test_lcr__():
+    # live + certify + refine
+    rsl_list=[240,360,480,720]
+    bs=8
+    mat_pt=np.array([[52,37,28,25,22,27,25,24],
+        [98,70,61,60,59,60,60,59],
+        [154,131,110,115,110,105,101,96],
+        [358,271,226,210,211,212,208,204]])*0.001
     
+    nlength = 400
+    nsource = 10
+    data=np.load('data/simulated-workload-10.npz',allow_pickle=True)
+    w=data['w']; smy=data['smy']
+    data.close()
+    
+    ltasks = workload_to_tasks(w, rsl_list, 30)
+    csegs,ctasks = generate_certify_tasks(nsource, nlength, 30, 1, (480,10), True)
+    rsegs,rtasks = generate_refine_tasks(csegs, nlength, 30, 0.05, (480,10))
+    tasks = merge_tasks(ltasks, ctasks, rtasks)
+    
+    speed_factor = 11.5
+    capacity = 1 * speed_factor
+    
+    fh=FrameHolder(rsl_list, bs, mat_pt, 'finish')
+    loads_l, rload_l, delays_l, detail_l = simulate_process(ltasks, fh, nlength, speed_factor)
+    fh.clear()
+    loads_t, rload_t, delays_t, detail_t = simulate_process(tasks, fh, nlength, speed_factor)
+    
+    #delays: (task_id, queue_delay, process_delay)
+    #detail: (ptime, rdy_rs, len(batch), load, fh.query_queue_length_as_list())
+    
+    delays_tl=filter_delays(tasks,delays_t,0)
+    
+    # workload (usage)
+    plt.figure()
+    plt.plot(util.moving_average(loads_l, 10)/capacity*100)
+    plt.plot(util.moving_average(loads_t, 10)/capacity*100)
+    plt.ylim((0,100))
+    plt.legend(['live-only','L+C+R'])
+    plt.xlabel('time (s)')
+    plt.ylabel('resource usage (%)')
+    plt.tight_layout()
+    
+    # delay
+    # delay - distribution    
+    show_delay_distribution(delays_t)
+    
+    show_delay_distribution_cmp([delays_l, delays_tl], ['live-only','L+C+R'])
+    
+    # delay - overtime
+    show_delay_overtime(delays_l, tasks, rsl_list, 400)
+    
+    show_delay_overtime_cmp([delays_l, delays_tl], tasks, rsl_list, 400, ['live-only','L+C+R'])
     
