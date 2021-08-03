@@ -8,19 +8,73 @@ from threading import Lock
 Configure = namedtuple('Configure', ['rs', 'fr', 'roi', 'model'])
 FrameInfo = namedtuple('FrameInfo', ['tid', 'jid', 'sid', 'fid', 'time'])
 
+class FrameQueue():
+    def __init__(self):
+        self.lock = Lock()
+        self.queue = []
+        self.info = []
+    
+    def size(self):
+        return len(self.queue)
+    
+    def empty(self):
+        return len(self.queue) == 0
+    
+    def clear(self):
+        with self.lock:
+            self.queue = []
+            self.info = []
+    
+    def put(self, frame:np.ndarray, info:FrameInfo):
+        with self.lock:
+            self.queue.append(frame)
+            self.info.append(info)
+        return len(self.queue)
+        
+    def get(self, n):
+        res_f = None
+        res_i = None
+        if len(self.queue) > 0:
+            with self.lock:
+                res_f = self.queue[:n]
+                res_i = self.info[:n]
+                del self.queue[:n]
+                del self.info[:n]
+        return res_f, res_i
+    
+    def get_all(self):
+        res_f = None
+        res_i = None
+        if len(self.queue) > 0:
+            with self.lock:
+                res_f = self.queue
+                res_i = self.info
+                self.queue = []
+                self.info = []
+        return res_f, res_i
+    
+    def wait_time(self, now):
+        if len(self.info) == 0:
+            return 0.0
+        else:
+            return now - self.info[0].time
+
 # next: add queues for different models
 
 class FrameHolder():
     
-    def __init__(self, rsl_list, bs, mat_pt, policy='come', **kwargs):
+    def __init__(self, rsl_list, bs:int, levels:int, mat_pt:np.ndarray,
+                 policy='come', **kwargs):
         self.rsl_list = rsl_list
         self.rsl_index = { rs:i for i,rs in enumerate(rsl_list) }
-        
-        self.locks = { rs:Lock() for rs in rsl_list }
-        self.queues = { rs:[] for rs in rsl_list }
-        self.infos = { rs:[] for rs in rsl_list }
-        
+        self.nrsl = len(rsl_list)
+        assert 0 < bs
         self.batchsize = bs
+        assert 0 <= levels
+        self.levels = levels
+        
+        self.queues = [[ FrameQueue() for _ in range(self.nrsl) ] for _ in range(levels)]
+        
         self.process_time = mat_pt
         if mat_pt is not None:
             assert mat_pt.ndim == 2 and mat_pt.shape[0] == len(rsl_list)
@@ -33,28 +87,38 @@ class FrameHolder():
         
     
     def clear(self):
-        self.queues = { rs:[] for rs in self.rsl_list }
-        self.infos = { rs:[] for rs in self.rsl_list }
+        for qs in self.queues:
+            for q in qs:
+                q.clear()
         self.tid = 0
 
-    def put(self, frame:np.ndarray, jobID:int, stmID:int, frmID:int,
-            conf:Configure, t:float=None):
-        rs = conf.rs
+    def put(self, frame:np.ndarray, level:int,
+            jobID:int, stmID:int, frmID:int, rs:int, t:float=None):
+        '''
+        level determines the priority. 0 is the highest, 1 is lower
+        '''
         assert rs in self.rsl_list
+        rs_ind = self.rsl_index[rs]
+        assert 0 <= level < self.levels
         t = t if t is not None else time.time()
         with self.tid_lock:
             tid = self.tid
             self.tid += 1
-        with self.locks[rs]:
-            self.queues[rs].append(frame)
-            self.infos[rs].append(FrameInfo(tid, jobID, stmID, frmID, t))
-        return len(self.queues[rs])
+        info = FrameInfo(tid, jobID, stmID, frmID, t)
+        q = self.queues[level][rs_ind]
+        return q.put(frame, info)
     
-    def empty(self, rs=None):
-        if rs is None:
-            return np.all([len(v) == 0 for k,v in self.queue.items()])
+    def empty(self, level=None, rs=None):
+        if level is None:
+            np.all([ self.empty(rs,i) for i in range(self.levels) ])
         else:
-            return len(self.queue[rs]) == 0
+            assert 0 <= level < self.levels
+            qs = self.queues[level]
+            if rs is None:
+                return np.all([q.empty() for q in qs])
+            else:
+                rs_ind = self.rsl_index[rs]
+                return len(qs[rs_ind]) == 0
     
     def estimate_processing_time(self, rs, n):
         ind = self.rsl_index[rs]
@@ -62,34 +126,48 @@ class FrameHolder():
     
     # info query functions
     
-    def query_queue_length(self, rs=None):
-        if rs is None:
-            return { k:len(q) for k,q in self.queues.items() }
+    def query_queue_length(self, level=None, rs=None):
+        if level is None:
+            res = [self.query_queue_length(i, rs) for i in range(self.levels)]
+            return res
         else:
-            return self.queues[rs]
+            assert 0 <= level < self.levels
+            qs = self.queues[level]
+            if rs is None:
+                return [ q.size() for q in qs ]
+            else:
+                rs_ind = self.rsl_index[rs]
+                return qs[rs_ind].size()
+            
 
-    def query_queue_length_as_list(self):
-        l = np.zeros(len(self.rsl_list), int)
-        for i, rs in enumerate(self.rsl_list):
-            l[i] = len(self.queues[rs])
+    def query_queue_length_as_mat(self):
+        l = np.zeros((self.levels, self.nrsl), int)
+        for i in range(self.levels):
+            for j in range(self.nrsl):
+                l[i][j] = self.queues[i][j].size()
         return l
     
-    def query_waiting_time(self, rs=None, now=None):
+    def query_waiting_time(self, level=None, rs=None, now=None):
         if now is None:
             now = time.time()
-        if rs is None:
-            return { k:0 if len(q)==0 else q[0].time - now for k,q in self.infos.items() }
+        if level is None:
+            res = [ self.query_waiting_time(i, rs) for i in range(self.levels) ]
+            return res
         else:
-            iq = self.infos[rs]
-            return 0 if len(iq) == 0 else iq[0].time - now
+            qs = self.queues[level]
+            if rs is None:
+                return [ q.wait_time(now) for q in qs ]
+            else:
+                rs_ind = self.rsl_index[rs]
+                return qs[rs_ind].wait_time(now)
     
-    def query_waiting_time_as_list(self, now=None):
+    def query_waiting_time_as_mat(self, now=None):
         if now is None:
             now = time.time()
-        l = np.zeros(len(self.rsl_list), int)
-        for i, rs in enumerate(self.rsl_list):
-            q = self.info[rs]
-            l[i] = 0 if len(q)==0 else q[0].time - now
+        l = np.zeros((self.levels, self.nrsl))
+        for i in range(self.levels):
+            for j in range(self.nrsl):
+                l[i][j] = self.queues[i][j].wait_time(now)
         return l
     
     # find ready queue        
@@ -106,112 +184,87 @@ class FrameHolder():
         elif m == 'delay':
             self.ready = self.ready_max_delay_first
         elif m == 'priority':
+            self.ready_param = {'alpha':float(kwargs['param_alpha'])}
             self.ready = self.ready_priority_first
         
     def ready_come_first(self):
-        t = [info[0].time if len(info)>=self.batchsize else np.inf 
-             for rs,info in self.infos.items()]
-        ind = np.argmin(t)
-        if np.isinf(t[ind]):
-            return None
-        return self.rsl_list[ind]
+        for lvl in range(self.levels):
+            t = [q.info[0].time if q.size()>=self.batchsize else np.inf
+                 for q in self.queues[lvl]]
+            ind = np.argmin(t)
+            if not np.isinf(t[ind]):
+                return lvl, self.rsl_list[ind]
+        return None, None
     
     def ready_small_first(self):
-        for rs in self.rsl_list:
-            q = self.queues[rs]
-            if len(q) >= self.batchsize:
-                return rs
-        else:
-            return None
+        for lvl in range(self.levels):
+            for i in range(self.nrsl):
+                q = self.queues[lvl][i]
+                if q.size() >= self.batchsize:
+                    return lvl, self.rsl_list[i]
+        return None, None
    
     def ready_finish_first(self, now=None):
         if now is None:
             now = time.time()
-        etds = np.zeros(len(self.rsl_list)) + np.inf
-        for i, rs in enumerate(self.rsl_list):
-            info = self.infos[rs]
-            if len(info) >= self.batchsize:
-                etds[i] = now - info[0].time
-                etds[i] += self.estimate_processing_time(rs, min(self.batchsize, len(info)))
-        ind = etds.argmin()
-        if np.isinf(etds[ind]):
-            return None
-        return self.rsl_list[ind]
+        for lvl in range(self.levels):
+            etds = self.__estimated_delays__(lvl, now, np.inf)
+            ind = etds.argmin()
+            if not np.isinf(etds[ind]):
+                return lvl, self.rsl_list[ind]
+        return None, None
 
     def ready_max_delay_first(self, now=None):
         if now is None:
             now = time.time()
-        etds = np.zeros(len(self.rsl_list)) - np.inf
-        for i, rs in enumerate(self.rsl_list):
-            info = self.infos[rs]
-            # may not be a full batch
-            if len(info) >= 1:
-                etds[i] = now - info[0].time
-                etds[i] += self.estimate_processing_time(rs, min(self.batchsize, len(info)))
-        ind = etds.argmax()
-        if np.isinf(etds[ind]):
-            return None
-        return self.rsl_list[ind]
+        for lvl in range(self.levels):
+            etds = self.__estimated_delays__(lvl, now, -np.inf)
+            ind = etds.argmax()
+            if not np.isinf(etds[ind]):
+                return lvl, self.rsl_list[ind]
+        return None, None
     
     def ready_priority_first(self, now=None):
         if now is None:
             now = time.time()
-        pass
+        for lvl in range(self.levels):
+            priority = self.__estimated_delays__(lvl, now, -np.inf, self.ready_param['alpha'])
+            ind = priority.argmax()
+            if not np.isinf(priority[ind]):
+                return lvl, self.rsl_list[ind]
+        return None, None
 
     # data get functions
     
-    def get_batch(self, rs):
-        res_f = None
-        res_i = None
-        if len(self.queues[rs]) > 0:
-            with self.locks[rs]:
-                res_f = self.queues[rs][:self.batchsize]
-                res_i = self.infos[rs][:self.batchsize]
-                del self.queues[rs][:self.batchsize]
-                del self.infos[rs][:self.batchsize]
-        return res_f, res_i
+    def get_batch(self, level, rs):
+        ind = self.rsl_index[rs]
+        return self.queues[level][ind].get(self.batchsize)
     
-    def get_queue(self, rs):
-        res_f = None
-        res_i = None
-        if len(self.queues[rs]) > 0:
-            with self.locks[rs]:
-                res_f = self.queues[rs]
-                res_i = self.infos[rs]
-                self.queues[rs] = []
-                self.infos[rs] = []
-        return res_f, res_i
+    def get_queue(self, level, rs):
+        ind = self.rsl_index[rs]
+        return self.queues[level][ind].get_all()
     
     # -- inner functions --
     
-    def __fast_queue_length__(self):
-        res = np.zeros(len(self.rsl_list), int)
-        for i, (rs, q) in enumerate((self.queues.items())):
-            res[i] = len(q)
-        return res
-    
-    def __estimated_delay_one__(self, rs, now):
-        q = self.queues[rs]
-        n = len(q)
+    def __estimated_delay_one__(self, level, rs, now):
+        ind = self.rsl_index(rs)
+        q = self.queues[level][ind]
+        n = q.size()
         if n > 0:
-            ind_rs = self.rsl_index[rs]
-            f = self.infos[rs]
-            etd = now - f[0].time
-            etd += self.process_time[ind_rs][min(n, self.batchsize)-1]*n
+            etd = q.wait_time(now)
+            etd += self.process_time[ind][min(n, self.batchsize)-1]*n
         else:
             etd = 0.0
         return etd
     
-    def __estimated_delays__(self):
-        t = time.time()
-        etds = np.zeros(len(self.rsl_list))
-        for i, rs in enumerate(self.rsl_list):
-            q = self.queues[rs]
-            n = len(q)
+    def __estimated_delays__(self, level, now, pad=np.nan, alpha=1.0):
+        etds = np.zeros(self.nrsl) + pad
+        qs = self.queues[level]
+        for i, q in enumerate(qs):
+            n = q.size()
             if n > 0:
-                f = self.infos[rs]
-                etd = t - f[0].time
-                etd += self.process_time[i][min(n, self.batchsize)-1]*n
+                etd = q.wait_time(now)*alpha
+                etd += self.process_time[i][min(n, self.batchsize-1)]*n
                 etds[i] = etd
         return etds
 
@@ -227,20 +280,37 @@ def __test__():
         [154,131,110,115,110,105,101,96],
         [358,271,226,210,211,212,208,204]])*0.001
     
-    fh=FrameHolder(rsl_list,bs,mat_pt,'finish')
+    fh=FrameHolder(rsl_list,bs,2,mat_pt,'finish')
     for i in range(5):
-        rs=480
-        fh.put(np.zeros(rs,rs),0,0,i,Configure(rs,2,False,'yolov5m'))
-        rs=240
-        fh.put(np.zeros(rs,rs),0,0,i,Configure(rs,2,False,'yolov5m'))
+        rs = 480
+        fh.put(np.zeros((rs,rs)),0,0,0,i,rs)
+        rs = 240
+        fh.put(np.zeros((rs,rs)),0,0,1,i,rs)
+    for i in range(5):
+        rs = 360
+        fh.put(np.zeros((rs,rs)),1,0,0,i,rs)
+        rs = 720
+        fh.put(np.zeros((rs,rs)),1,0,1,i,rs)
+
+    print('queue length')
+    print(fh.query_queue_length())
+    print(fh.query_queue_length_as_mat())
+    print(fh.query_queue_length(level=0))
+    print(fh.query_queue_length(rs=240))
     
-    print(fh.__queue_length__())
-    print(fh.__estimated_delays__())
+    print('wait time')
+    print(fh.query_waiting_time())
+    print(fh.query_waiting_time_as_mat())
+    print(fh.query_waiting_time(1, 360))
     
-    r = fh.get()
-    assert r is not None
-    print(len(r[0]), r[1], r[0][0].shape)
+    print('go')
+    while rdy := fh.ready(time.time()):
+        rdy_lvl, rdy_rs = rdy
+        if rdy_lvl is None:
+            break
+        ql = fh.query_queue_length(rdy_lvl, rdy_rs)
+        wt = fh.query_waiting_time(rdy_lvl, rdy_rs)
+        d_frm, d_info = fh.get_batch(rdy_lvl, rdy_rs)
+        print(rdy_lvl, rdy_rs, rsl_list.index(rdy_rs), len(d_frm))
+        print(ql, wt)
     
-    r = fh.get()
-    assert r is not None
-    print(len(r[0]), r[1], r[0][0].shape)
