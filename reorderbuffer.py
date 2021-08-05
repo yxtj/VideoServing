@@ -36,6 +36,20 @@ class ReorderBuffer:
             n -= 1
         return res_i, res_d
     
+    def get_check(self, target_idx, n:int=0):
+        if n == 0:
+            n = self.plast - self.pfirst
+        while self.pfirst < self.plast and n > 0:
+            idx = self.pfirst
+            self.buffer_data.pop(idx)
+            self.pfirst += 1
+            n -= 1
+            if idx == target_idx:
+                return True
+        return False
+    
+    # size related 
+    
     def size(self):
         return len(self.buffer_data)
     
