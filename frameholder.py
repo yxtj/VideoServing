@@ -208,7 +208,7 @@ class FrameHolder():
         if now is None:
             now = time.time()
         for lvl in range(self.levels):
-            etds = self.__estimated_delays__(lvl, now, np.inf)
+            etds = self.__estimated_delays__(lvl, now, np.inf, self.batchsize)
             ind = etds.argmin()
             if not np.isinf(etds[ind]):
                 return lvl, self.rsl_list[ind]
@@ -218,7 +218,7 @@ class FrameHolder():
         if now is None:
             now = time.time()
         for lvl in range(self.levels):
-            etds = self.__estimated_delays__(lvl, now, -np.inf)
+            etds = self.__estimated_delays__(lvl, now, -np.inf, self.batchsize)
             ind = etds.argmax()
             if not np.isinf(etds[ind]):
                 return lvl, self.rsl_list[ind]
@@ -228,7 +228,7 @@ class FrameHolder():
         if now is None:
             now = time.time()
         for lvl in range(self.levels):
-            priority = self.__estimated_delays__(lvl, now, -np.inf, self.ready_param['alpha'])
+            priority = self.__estimated_delays__(lvl, now, -np.inf, self.batchsize, self.ready_param['alpha'])
             ind = priority.argmax()
             if not np.isinf(priority[ind]):
                 return lvl, self.rsl_list[ind]
@@ -257,12 +257,12 @@ class FrameHolder():
             etd = 0.0
         return etd
     
-    def __estimated_delays__(self, level, now, pad=np.nan, alpha=1.0):
+    def __estimated_delays__(self, level, now, pad=np.nan, ql_min=-1, alpha=1.0):
         etds = np.zeros(self.nrsl) + pad
         qs = self.queues[level]
         for i, q in enumerate(qs):
             n = q.size()
-            if n > 0:
+            if n >= ql_min:
                 etd = q.wait_time(now)*alpha
                 etd += self.process_time[i][min(n, self.batchsize-1)]*n
                 etds[i] = etd
