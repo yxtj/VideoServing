@@ -53,6 +53,14 @@ def get_profile_bound_acc(conf_time, conf_acc, acc_bound):
 # %% adaptation - profile-based
 
 def adapt_profile(ptime, pacc, acc_bounds, pfl_period, pfl_length):
+    '''
+    Returns
+    -------
+    res_t : time list
+    res_a : accuracy list
+    res_s : configure list
+    pf_t : profiling time list
+    '''
     assert ptime.shape == pacc.shape
     assert ptime.ndim >= 2
     nknob = ptime.ndim - 1
@@ -82,7 +90,7 @@ def adapt_profile(ptime, pacc, acc_bounds, pfl_period, pfl_length):
     pfl_sel = np.array(np.unravel_index(sel_idx, shape[:-1])).T
     res_t = np.zeros(nseg)
     res_a = np.zeros(nseg)
-    res_s = np.zeros((nseg, nknob))
+    res_s = np.zeros((nseg, nknob), int)
     pf_t = np.zeros(nseg)
     for i in range(len(idxes)):
         if i != len(idxes) - 1:
@@ -133,32 +141,62 @@ def __test__():
     # no adaptation
     ptg = cts[0][3,0]
     pag = cas[0][3,0]
+    ao_t,ao_a,ao_s,ao_pt=adapt_profile(cts[0],cas[0],[0.9,0.8,0.7,0.5],len(ptg),30)
     # profile-based adaptation
     ap_t,ap_a,ap_s,ap_pt=adapt_profile(cts[0],cas[0],[0.9,0.8,0.7,0.5],30,1)
     # profile-free adaptation
     pt,pa,ps=get_profile_bound_acc(cts[0],cas[0],0.9)
 
+    # workload
     plt.figure()
     plt.plot(ptg*WLF) # none
-    plt.plot((ap_t+ap_pt)*WLF) # profile
+    plt.plot(ao_t*WLF) # profile-once
+    plt.plot((ap_t+ap_pt)*WLF) # profile-period
     plt.plot(util.moving_average(pt,10)*WLF) # predict
     plt.xlabel('time (s)')
     plt.ylabel('resource (GFLOPS)')
     #plt.ylabel('resource (s)')
-    plt.legend(['static','prf-base','prf-free'],ncol=2,fontsize=12)
+    plt.legend(['no-adapt', 'prf-once','prf-period','prf-free'],ncol=2,fontsize=12,columnspacing=0.5)
     plt.ylim((-10,380))
     plt.tight_layout()
+    
+    # zoomin comparison for workload
+    plt.figure()
+    plt.plot(util.moving_average(ao_t,10)*WLF, color=colors[1]) # profile-once
+    plt.plot((util.moving_average(ap_t,5)+ap_pt)*WLF, color=colors[2]) # profile-period
+    plt.plot(util.moving_average(pt,10)*WLF, color=colors[3]) # predict
+    plt.xlabel('time (s)')
+    plt.ylabel('resource (GFLOPS)')
+    #plt.ylabel('resource (s)')
+    plt.legend(['prf-once','prf-period','prf-free'])
+    plt.ylim((0,10))
+    #plt.yscale('log')
+    plt.tight_layout()
 
+    # accuracy
     plt.figure()
     plt.plot(util.moving_average(pag,10)) # none
-    plt.plot(util.moving_average(ap_a,10)) # profile
+    plt.plot(util.moving_average(ao_a,10)) # profile-once
+    plt.plot(util.moving_average(ap_a,10)) # profile-period
     plt.plot(util.moving_average(pa,10)) # predict
     plt.ylim((-0.1,1.1)) # plt.ylim((-0.05,1.05))
     plt.xlabel('time (s)')
     plt.ylabel('accuracy')
-    plt.legend(['static','prf-base','prf-free'])
+    plt.legend(['no-adapt', 'prf-once','prf-period','prf-free'],ncol=2,fontsize=12,columnspacing=0.5)
     plt.tight_layout()
     
+    al = [pag.mean(), ao_a.mean(), ap_a.mean(), pa.mean()]
+    #al.reverse()
+    x = np.arange(4)
+    plt.figure()
+    plt.bar(x, al, width=0.7)
+    plt.xticks(x, ['no-adapt', 'prf-once','prf-period','prf-free'], rotation=-30)
+    plt.ylim((0,1))
+    plt.ylabel('accuracy')
+    plt.tight_layout()
+    
+    
+    # workload and accuracy
     plt.figure()
     plt.subplot2grid((2,1),(0,0))
     plt.plot(pt*WLF)
