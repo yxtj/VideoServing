@@ -218,253 +218,7 @@ def simulate_process(tasks, ntask_each, fh, nlength, speed_factor):
           (ptime, rest_load, rest_load/speed_factor, loads.mean(), *avg_delay.mean(0)))
     return loads, rest_load, delays, details
 
-
-# %% plot for test
-
-def show_delay_distribution(delays, nbin=100, cdf=True, bar=False, newfig=True):
-    d = np.concatenate([ d.sum(1) for d in delays ])
-    hh,xh=np.histogram(d, nbin)
-    x = (xh[1:]+xh[:-1])/2
-    h = hh / hh.sum()
-    
-    if newfig:
-        plt.figure()
-    if cdf:
-        if bar:
-            plt.bar(xh, plt.plot(xh, np.pad(np.cumsum(h), (1,0))), x[1]-x[0])
-        else:
-            plt.plot(xh, np.pad(np.cumsum(h), (1,0)))
-    else:
-        if bar:
-            plt.bar(x, h, x[1]-x[0]) # x[1]-x[0] is the width
-        else:
-            plt.plot(x, h)
-    plt.xlabel('delay (s)')
-    if cdf:
-        plt.ylabel('CDF')
-    else:
-        plt.ylabel('PDF')
-    plt.tight_layout()
-
-def show_delay_distribution_cmp(delays_list, legends=None, select_idx=None,
-                                nbin=100, newfig=True):
-    dly_max = max([d.sum(1).max() for dg in delays_list for d in dg])
-    if select_idx is None:
-        select_idx = list(range(len(delays_list)))
-    if newfig:
-        plt.figure()
-    for i in select_idx:
-        d = np.concatenate([d.sum(1) for d in delays_list[i]])
-        hh,xh=np.histogram(d, nbin, (0, dly_max))
-        h = hh / hh.sum()
-        plt.plot(xh, np.pad(np.cumsum(h), (1,0)))
-    if legends:
-        plt.legend([legends[i] for i in select_idx])
-    plt.xlabel('delay (s)')
-    plt.ylabel('CDF')
-    plt.tight_layout()
-
-def show_delay_overtime(delays, tasks, rsl_list, nlength, newfig=True):
-    delay_ot = np.zeros((len(rsl_list), nlength))
-    ntask_ot = np.zeros((len(rsl_list), nlength), int)
-    for tid, dq, dp in delays:
-        tid = int(np.round(tid))
-        rs = tasks[tid].rs
-        rid = rsl_list.index(rs)
-        pid = int(tasks[tid].time)
-        delay_ot[rid, pid] += dq+dp
-        ntask_ot[rid, pid] += 1
-    ntask_ot[ntask_ot==0] = 1 # prevent warning of divided by zero
-    ad = delay_ot/ntask_ot
-    if newfig:
-        plt.figure()
-    #plt.plot(ad.sum(0))
-    plt.plot(util.moving_average(ad.sum(0),10))
-    plt.xlabel('time')
-    plt.ylabel('delay (s)')
-    plt.tight_layout()
-
-
-def show_delay_overtime_cmp(delays_list, tasks, rsl_list, nlength,
-                            legends=None, select_idx=None, newfig=True):
-    if newfig:
-        plt.figure()
-    if select_idx is None:
-        select_idx = list(range(len(delays_list)))
-    for i in select_idx:
-        delay_ot = np.zeros((len(rsl_list), nlength))
-        ntask_ot = np.zeros((len(rsl_list), nlength), int)
-        for tid, dq, dp in delays_list[i]:
-            tid = int(np.round(tid))
-            rs = tasks[tid].rs
-            rid = rsl_list.index(rs)
-            pid = int(tasks[tid].time)
-            delay_ot[rid, pid] += dq+dp
-            ntask_ot[rid, pid] += 1
-        ntask_ot[ntask_ot==0] = 1 # prevent warning of divided by zero
-        ad = delay_ot/ntask_ot
-        plt.plot(util.moving_average(ad.sum(0),10))
-    plt.legend([legends[i] for i in select_idx])
-    plt.xlabel('time')
-    plt.ylabel('delay (s)')
-    plt.tight_layout()
-        
-# %% test
-import matplotlib.pyplot as plt
-import util
-
-def __test__():
-    rsl_list=[240,360,480,720]
-    bs=8
-    mat_pt=np.array([[52,37,28,25,22,27,25,24],
-        [98,70,61,60,59,60,60,59],
-        [154,131,110,115,110,105,101,96],
-        [358,271,226,210,211,212,208,204]])*0.001
-    
-    import profiling
-    vn_list = ['s3', 's4', 's5', 's7']
-    fps_list = [25,30,20,30]
-    segment = 1
-    
-    pts=[]
-    pas=[]
-    pss=[]
-    for i,vn in enumerate(vn_list):
-        #_,_,sg_list,cts,cas,_=profiling.load_configurations('data/%s/conf-%s.npz' % (vn,vn), 1)
-        _,_,sg_list,cts,cas,ccs=profiling.load_configurations('data/%s/conf.npz' % (vn), 2)
-        sg_idx=sg_list.tolist().index(segment)
-        pt,pa,ps=profiling.get_profile_bound_acc(cts[sg_idx],cas[sg_idx],0.9)
-        pts.append(pt)
-        pas.append(pa)
-        pss.append(ps)
-    
-    nlength = 400
-    workload = np.zeros((len(vn_list), nlength, 2), int)
-    for i, fps in enumerate(fps_list):
-        if fps == 20:
-            fr_list = profiling.FR_FOR_20
-        elif fps == 25:
-            fr_list = profiling.FR_FOR_25
-        else:
-            fr_list = profiling.FR_FOR_30
-        for j, (ind_rs, ind_fr) in enumerate(pss[i]):
-            #rs = rsl_list[ind_rs]
-            nf = int(fps/fr_list[ind_fr])
-            k = 0
-            x = j + len(pss[i])*k
-            while x < nlength:
-                workload[i, x] = (ind_rs, nf)
-                k += 1
-                x = j + len(pss[i])*k
-
-    # simulate workload
-    fps_list = [1, 2, 5, 10, 15, 30]
-    nsource = 10
-    distr_rsl, cdistr_rsl_fps = compute_distribution_over_slot(workload, len(rsl_list), fps_list)
-    w,smy = simulate_workloads(nsource, nlength, distr_rsl, cdistr_rsl_fps, fps_list)
-    assert w.shape == (nsource, nlength, 2)
-    
-    np.savez('data/simulated-workload-10',w=w,smy=smy)
-    data=np.load('data/simulated-workload-10.npz',allow_pickle=True)
-    w=data['w']; smy=data['smy']
-    data.close()
-    
-    tasks, _ = workload_to_tasks(w, rsl_list, 30)
-    
-    opt_loads,opt_rest,opt_delays = optimal_process(tasks, rsl_list, bs, mat_pt)
-    print(opt_loads.mean(1), opt_rest, opt_delays[:,1:].mean(0))
-    
-    plt.figure()
-    plt.plot(util.moving_average(opt_loads,10).T)
-    plt.plot(util.moving_average(opt_loads.sum(0),10).T,'--')
-    plt.ylim((-1, None))
-    plt.legend(rsl_list+['sum'])
-    plt.ylabel('opt-workload (s)')
-    plt.xlabel('time (s)')
-    plt.tight_layout()
-    
-    speed_factor = 11.5
-    capacity = 1 * speed_factor
-    
-    fh=FrameHolder(rsl_list, bs, 1, mat_pt, 'come')
-    
-    loads, rest_load, delays, details = simulate_process(tasks, fh, nlength, speed_factor)
-    
-    methods = ['come', 'small', 'finish', 'delay']
-    legends = ['FCFS', 'QFS', 'FFFS', 'LFFS']
-    
-    loads8 = np.zeros((len(methods), nlength))
-    rloads8 = np.zeros(len(methods))
-    details8 = [None for _ in range(len(methods))]
-    delays8 = [None for _ in range(len(methods))]
-    #for bs in [1,2,4,8]:
-    #    fh=FrameHolder(rsl_list, bs, mat_pt, 'finish')
-    for i, m in enumerate(methods):
-        fh.clear()
-        fh.set_ready_method(m)
-        #details: (ptime, rdy_rs, len(batch), load, fh.query_queue_length_as_list())
-        loads, rest_load, delays, details = simulate_process(tasks, fh, nlength, speed_factor)
-        loads8[i]=loads
-        rloads8[i] = rest_load
-        details8[i] = details
-        delays8[i] = delays
-    # show loads
-    plt.plot(util.moving_average(loads8[:3], 10).T)
-    plt.plot(util.moving_average(opt_loads.sum(0), 10).T, '--')
-    plt.ylim((-1,None))
-    plt.legend(methods+['opt'])
-    
-    # analyze queue length
-    queuelength = np.zeros((len(rsl_list), nlength))
-    num_process = np.zeros(nlength)
-    for t, lvl, rs, bs, load, ql in details:
-        ind_t = int(t)
-        queuelength[:,ind_t] += ql[0] # live queue only
-        num_process[ind_t] += 1
-    queuelength /= num_process # average queue length of each time slot
-    print((queuelength<bs).mean(1))
-    
-    ql_max = queuelength.max()
-    
-    plt.figure()
-    plt.hist(queuelength.T, 8)
-    plt.legend(rsl_list)
-    plt.xlabel('queue length')
-    plt.ylabel('number')
-    plt.tight_layout()
-    
-    plt.figure()
-    for ql in queuelength:
-        hh,xh=np.histogram(ql, 30, (0, ql_max))
-        x = (xh[1:]+xh[:-1])/2
-        h = hh / hh.sum()
-        plt.plot(x, h)
-    plt.legend(rsl_list)
-    plt.xlabel('queue length')
-    plt.ylabel('PDF')
-    plt.tight_layout()
-    
-    
-    # analyze delay
-    
-    # delay - total delay distribution
-    ## pdf
-    show_delay_distribution(delays, 100, False)
-    ## cdf
-    show_delay_distribution(delays, 100, True)
-    ## selected some
-    method_idx = [0,1,2,3]
-    #method_idx = [0,2]
-    show_delay_distribution_cmp(delays8, legends, method_idx)
-    
-    
-    # delay - overtime
-    show_delay_overtime(delays, tasks, rsl_list, nlength)
-    
-    show_delay_overtime_cmp(delays8, tasks, rsl_list, nlength, method_idx)
-    
-    
-# %% test with multiple kinds of jobs (live, certify, refine)
+# %% helper functions for live+certify+reine experiment
 
 # when stream <sid> of type <cond_tp> finishes all tasks before <cond_tm> (inclusive)
 @dataclass
@@ -566,7 +320,7 @@ def simulate_process_with_cr(tasks, ntask_each, csegs, rsegs, fh,
             if ct > now:
                 del commit_buffer[:i]
                 break
-            if jid >= 0:
+            if jid >= 0: # live job
                 rbs_l[sid].put(b, fid)
             elif jid == JID_CTF:
                 rbs_c[sid].put(b, fid)
@@ -611,6 +365,263 @@ def simulate_process_with_cr(tasks, ntask_each, csegs, rsegs, fh,
           (ptime, *rest_load, rest_load.sum()/speed_factor, loads.mean(), *avg_delay.mean(0)))
     return loads, rest_load, delays, details
 
+
+# %% analyze result
+
+def analyze_delay_overtime(delays, workload, rsl_list):
+    assert workload.ndim == 3 and workload.shape[2] == 2
+    nsource, nlength = workload.shape[:2]
+    nrsl = len(rsl_list)
+    
+    delay_ot = np.zeros((nrsl, nlength))
+    ntask_ot = np.zeros((nrsl, nlength), int)
+    for sid, dl in enumerate(delays):
+        p = 0
+        for tid in range(nlength):
+            rs_ind, nf = workload[sid,tid]
+            delay_ot[rs_ind, tid] += dl[p:p+nf].sum()
+            ntask_ot[rs_ind, tid] += nf
+            p += nf
+    # prevent warning of divided by zero
+    temp = ntask_ot.sum(0)
+    temp[temp==0] = 1
+    dot_avg = delay_ot.sum(0) / temp
+    ntask_ot[ntask_ot==0] = 1
+    dot_each = delay_ot/ntask_ot
+    return dot_each, dot_avg
+
+# %% plotting script
+
+def show_delay_distribution(delays, nbin=100, cdf=True, bar=False, newfig=True):
+    d = np.concatenate([ d.sum(1) for d in delays ])
+    hh,xh=np.histogram(d, nbin)
+    x = (xh[1:]+xh[:-1])/2
+    h = hh / hh.sum()
+    
+    if newfig:
+        plt.figure()
+    if cdf:
+        if bar:
+            plt.bar(xh, plt.plot(xh, np.pad(np.cumsum(h), (1,0))), x[1]-x[0])
+        else:
+            plt.plot(xh, np.pad(np.cumsum(h), (1,0)))
+    else:
+        if bar:
+            plt.bar(x, h, x[1]-x[0]) # x[1]-x[0] is the width
+        else:
+            plt.plot(x, h)
+    plt.xlabel('delay (s)')
+    if cdf:
+        plt.ylabel('CDF')
+    else:
+        plt.ylabel('PDF')
+    plt.tight_layout()
+
+def show_delay_distribution_cmp(delays_list, legends=None, select_idx=None,
+                                nbin=100, newfig=True):
+    dly_max = max([d.sum(1).max() for dg in delays_list for d in dg])
+    if select_idx is None:
+        select_idx = list(range(len(delays_list)))
+    if newfig:
+        plt.figure()
+    for i in select_idx:
+        d = np.concatenate([d.sum(1) for d in delays_list[i]])
+        hh,xh=np.histogram(d, nbin, (0, dly_max))
+        h = hh / hh.sum()
+        plt.plot(xh, np.pad(np.cumsum(h), (1,0)))
+    if legends:
+        plt.legend([legends[i] for i in select_idx])
+    plt.xlabel('delay (s)')
+    plt.ylabel('CDF')
+    plt.tight_layout()
+
+def show_delay_overtime(delays, workload, rsl_list, individual=False, newfig=True):
+    dot_each, dot_avg = analyze_delay_overtime(delays, workload, rsl_list)
+    if newfig:
+        plt.figure()
+    #plt.plot(ad.sum(0))
+    if individual:
+        plt.plot(util.moving_average(dot_each, 10).T)
+        plt.legend(rsl_list)
+    else:
+        plt.plot(util.moving_average(dot_avg, 10))
+    plt.xlabel('time')
+    plt.ylabel('delay (s)')
+    plt.tight_layout()
+
+
+def show_delay_overtime_cmp(delays_list, workload, rsl_list,
+                            legends=None, select_idx=None, newfig=True):
+    if newfig:
+        plt.figure()
+    if select_idx is None:
+        select_idx = list(range(len(delays_list)))
+    for i in select_idx:
+        _, dot_avg = analyze_delay_overtime(delays_list[i], workload, rsl_list)
+        plt.plot(util.moving_average(dot_avg, 10))
+    if legends:
+        plt.legend([legends[i] for i in select_idx])
+    plt.xlabel('time')
+    plt.ylabel('delay (s)')
+    plt.tight_layout()
+        
+# %% test
+import matplotlib.pyplot as plt
+import util
+
+def __test__():
+    rsl_list=[240,360,480,720]
+    bs=8
+    mat_pt=np.array([[52,37,28,25,22,27,25,24],
+        [98,70,61,60,59,60,60,59],
+        [154,131,110,115,110,105,101,96],
+        [358,271,226,210,211,212,208,204]])*0.001
+    
+    import profiling
+    vn_list = ['s3', 's4', 's5', 's7']
+    fps_list = [25,30,20,30]
+    segment = 1
+    
+    pts=[]
+    pas=[]
+    pss=[]
+    for i,vn in enumerate(vn_list):
+        #_,_,sg_list,cts,cas,_=profiling.load_configurations('data/%s/conf-%s.npz' % (vn,vn), 1)
+        _,_,sg_list,cts,cas,ccs=profiling.load_configurations('data/%s/conf.npz' % (vn), 2)
+        sg_idx=sg_list.tolist().index(segment)
+        pt,pa,ps=profiling.get_profile_bound_acc(cts[sg_idx],cas[sg_idx],0.9)
+        pts.append(pt)
+        pas.append(pa)
+        pss.append(ps)
+    
+    nlength = 400
+    workload = np.zeros((len(vn_list), nlength, 2), int)
+    for i, fps in enumerate(fps_list):
+        if fps == 20:
+            fr_list = profiling.FR_FOR_20
+        elif fps == 25:
+            fr_list = profiling.FR_FOR_25
+        else:
+            fr_list = profiling.FR_FOR_30
+        for j, (ind_rs, ind_fr) in enumerate(pss[i]):
+            #rs = rsl_list[ind_rs]
+            nf = int(fps/fr_list[ind_fr])
+            k = 0
+            x = j + len(pss[i])*k
+            while x < nlength:
+                workload[i, x] = (ind_rs, nf)
+                k += 1
+                x = j + len(pss[i])*k
+
+    # simulate workload
+    fps_list = [1, 2, 5, 10, 15, 30]
+    nsource = 10
+    distr_rsl, cdistr_rsl_fps = compute_distribution_over_slot(workload, len(rsl_list), fps_list)
+    w,smy = simulate_workloads(nsource, nlength, distr_rsl, cdistr_rsl_fps, fps_list)
+    assert w.shape == (nsource, nlength, 2)
+    
+    np.savez('data/simulated-workload-10',w=w,smy=smy)
+    data=np.load('data/simulated-workload-10.npz',allow_pickle=True)
+    w=data['w']; smy=data['smy']
+    data.close()
+    
+    tasks, nfbefore = workload_to_tasks(w, rsl_list, 30)
+    
+    opt_loads,opt_rest,opt_delays = optimal_process(tasks, rsl_list, bs, mat_pt)
+    print(opt_loads.mean(1), opt_rest, opt_delays[:,1:].mean(0))
+    
+    plt.figure()
+    plt.plot(util.moving_average(opt_loads,10).T)
+    plt.plot(util.moving_average(opt_loads.sum(0),10).T,'--')
+    plt.ylim((-1, None))
+    plt.legend(rsl_list+['sum'])
+    plt.ylabel('opt-workload (s)')
+    plt.xlabel('time (s)')
+    plt.tight_layout()
+    
+    speed_factor = 11.5
+    capacity = 1 * speed_factor
+    
+    fh=FrameHolder(rsl_list, bs, 1, mat_pt, 'come')
+    
+    loads, rest_load, delays, details = simulate_process(tasks, nfbefore[:,-1], fh, nlength, speed_factor)
+    
+    methods = ['come', 'small', 'finish', 'delay']
+    legends = ['FCFS', 'QFS', 'FFFS', 'LFFS']
+    bss = [1,2,4,8]
+    
+    loads8 = np.zeros((len(methods), nlength))
+    rloads8 = np.zeros(len(methods))
+    details8 = [None for _ in range(len(methods))]
+    delays8 = [None for _ in range(len(methods))]
+    #for i, bs in enumerate(bss):
+    #    fh=FrameHolder(rsl_list, bs, 1, mat_pt, 'finish')
+    for i, m in enumerate(methods):
+        fh=FrameHolder(rsl_list, bs, 1, mat_pt, 'finish')
+        #details: (ptime, rdy_rs, len(batch), load, fh.query_queue_length_as_list())
+        loads, rest_load, delays, details = simulate_process(tasks, nfbefore[:,-1], fh, nlength, speed_factor)
+        loads8[i]=loads
+        rloads8[i] = rest_load
+        details8[i] = details
+        delays8[i] = delays
+    # show loads
+    plt.plot(util.moving_average(loads8[:3], 10).T)
+    plt.plot(util.moving_average(opt_loads.sum(0), 10).T, '--')
+    plt.ylim((-1,None))
+    plt.legend(methods+['opt'])
+    
+    # analyze queue length
+    queuelength = np.zeros((len(rsl_list), nlength))
+    num_process = np.zeros(nlength)
+    for t, lvl, rs, bs, load, ql in details:
+        ind_t = int(t)
+        queuelength[:,ind_t] += ql[0] # live queue only
+        num_process[ind_t] += 1
+    queuelength /= num_process # average queue length of each time slot
+    print((queuelength<bs).mean(1))
+    
+    ql_max = queuelength.max()
+    
+    plt.figure()
+    plt.hist(queuelength.T, 8)
+    plt.legend(rsl_list)
+    plt.xlabel('queue length')
+    plt.ylabel('number')
+    plt.tight_layout()
+    
+    plt.figure()
+    for ql in queuelength:
+        hh,xh=np.histogram(ql, 30, (0, ql_max))
+        x = (xh[1:]+xh[:-1])/2
+        h = hh / hh.sum()
+        plt.plot(x, h)
+    plt.legend(rsl_list)
+    plt.xlabel('queue length')
+    plt.ylabel('PDF')
+    plt.tight_layout()
+    
+    
+    # analyze delay
+    
+    # delay - total delay distribution
+    ## pdf
+    show_delay_distribution(delays, 100, False)
+    ## cdf
+    show_delay_distribution(delays, 100, True)
+    ## selected some
+    method_idx = [0,1,2,3]
+    #method_idx = [0,2]
+    show_delay_distribution_cmp(delays8, legends, method_idx)
+    
+    
+    # delay - overtime
+    show_delay_overtime(delays, w, rsl_list)
+    
+    show_delay_overtime_cmp(delays8, w, rsl_list, method_idx)
+    
+    
+# %% test with multiple kinds of jobs (live, certify, refine)
+
 #loads, rest_load, delays, details = simulate_process_with_cr(tasks, nfbefore[:,-1], csegs, rsegs, fh, nsource, nlength, speed_factor)
 
 def __test_lcr__():
@@ -635,11 +646,15 @@ def __test_lcr__():
     capacity = 1 * speed_factor
     
     fh=FrameHolder(rsl_list, bs, 2, mat_pt, 'finish')
-    loads_l, rload_l, delays_l, detail_l = simulate_process(tasks, fh, nlength, speed_factor)
+    loads_l, rload_l, delays_l, detail_l = simulate_process(tasks, nfbefore[:,-1], fh, nlength, speed_factor)
     fh.clear()
     loads_t, rload_t, delays_t, detail_t = simulate_process_with_cr(tasks, nfbefore[:,-1], csegs, rsegs, fh, nsource, nlength, speed_factor)
     
-    #delays: (task_id, queue_delay, process_delay)
+    loads_l, r = LoadManager.SmoothLoad(loads_l, capacity)
+    rload_l += r
+    loads_t, r = LoadManager.SmoothLoad(loads_t, capacity)
+    rload_t += r
+    
     #detail: (ptime, rdy_rs, len(batch), load, fh.query_queue_length_as_mat())
     
     # workload (usage)
@@ -659,7 +674,8 @@ def __test_lcr__():
     show_delay_distribution_cmp([delays_l, delays_t], ['Live-only','L+C+R'])
     
     # delay - overtime
-    show_delay_overtime(delays_l, tasks, rsl_list, 400)
+    show_delay_overtime(delays_l, w, rsl_list)
+    show_delay_overtime(delays_l, w, rsl_list, True)
     
-    show_delay_overtime_cmp([delays_l, delays_t], tasks, rsl_list, 400, ['Live-only','L+C+R'])
-    
+    show_delay_overtime_cmp([delays_l, delays_t], w, rsl_list, ['Live-only','L+C+R'])
+    plt.ylim((0,0.5))
