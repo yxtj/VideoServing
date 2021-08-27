@@ -173,7 +173,7 @@ class FrameHolder():
     # find ready queue        
     
     def set_ready_method(self, m, **kwargs):
-        assert m in ['come', 'small', 'finish', 'delay', 'prioirty']
+        assert m in ['come', 'small', 'finish', 'delay', 'priority', 'awt']
         self.policy = m
         if m == 'come':
             self.ready = lambda now: self.ready_come_first()
@@ -185,7 +185,10 @@ class FrameHolder():
             self.ready = self.ready_max_delay_first
         elif m == 'priority':
             self.ready_param = {'alpha':float(kwargs['param_alpha'])}
+            # priority = alpha*wait_time + process_time
             self.ready = self.ready_priority_first
+        elif m == 'awt':
+            self.ready = self.ready_awt
         
     def ready_come_first(self):
         for lvl in range(self.levels):
@@ -233,6 +236,16 @@ class FrameHolder():
             if not np.isinf(priority[ind]):
                 return lvl, self.rsl_list[ind]
         return None, None
+    
+    def ready_awt(self, now=None):
+        if now is None:
+            now = time.time()
+        for lvl in range(self.levels):
+            priority = self.__waiting_time_queue__(lvl, now, -np.inf, self.batchsize)
+            ind = priority.argmax()
+            if not np.isinf(priority[ind]):
+                return lvl, self.rsl_list[ind]
+        return None, None
 
     # data get functions
     
@@ -245,6 +258,15 @@ class FrameHolder():
         return self.queues[level][ind].get_all()
     
     # -- inner functions --
+    
+    def __waiting_time_queue__(self, level, now, pad=np.nan, ql_min=1):
+        wt = np.zeros(self.nrsl) + pad
+        qs = self.queues[level]
+        for i, q in enumerate(qs):
+            n = q.size()
+            if n >= ql_min:
+                wt[i] = q.wait_time(now)
+        return wt
     
     def __estimated_delay_one__(self, level, rs, now):
         ind = self.rsl_index(rs)
