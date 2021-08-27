@@ -445,6 +445,7 @@ def show_delay_overtime(delays, workload, rsl_list, individual=False, newfig=Tru
         plt.legend(rsl_list)
     else:
         plt.plot(util.moving_average(dot_avg, 10))
+    plt.ylim((0,None))
     plt.xlabel('time')
     plt.ylabel('delay (s)')
     plt.tight_layout()
@@ -461,6 +462,7 @@ def show_delay_overtime_cmp(delays_list, workload, rsl_list,
         plt.plot(util.moving_average(dot_avg, 10))
     if legends:
         plt.legend([legends[i] for i in select_idx])
+    plt.ylim((0,None))
     plt.xlabel('time')
     plt.ylabel('delay (s)')
     plt.tight_layout()
@@ -539,6 +541,7 @@ def __test__():
     plt.xlabel('time (s)')
     plt.tight_layout()
     
+    speed_factor = 8
     speed_factor = 11.5
     capacity = 1 * speed_factor
     
@@ -546,8 +549,8 @@ def __test__():
     
     loads, rest_load, delays, details = simulate_process(tasks, nfbefore[:,-1], fh, nlength, speed_factor)
     
-    methods = ['come', 'small', 'finish', 'delay']
-    legends = ['FCFS', 'QFS', 'FFFS', 'LFFS']
+    methods = ['come', 'small', 'finish', 'delay', 'priority', 'awt']
+    legends = ['FCFS', 'SJFS', 'FFFS', 'LFFS', 'Priority', 'LWFS']
     bss = [1,2,4,8]
     
     loads8 = np.zeros((len(methods), nlength))
@@ -557,7 +560,7 @@ def __test__():
     #for i, bs in enumerate(bss):
     #    fh=FrameHolder(rsl_list, bs, 1, mat_pt, 'finish')
     for i, m in enumerate(methods):
-        fh=FrameHolder(rsl_list, bs, 1, mat_pt, 'finish')
+        fh=FrameHolder(rsl_list, bs, 1, mat_pt, m, param_alpha=2.0)
         #details: (ptime, rdy_rs, len(batch), load, fh.query_queue_length_as_list())
         loads, rest_load, delays, details = simulate_process(tasks, nfbefore[:,-1], fh, nlength, speed_factor)
         loads8[i]=loads
@@ -569,6 +572,14 @@ def __test__():
     plt.plot(util.moving_average(opt_loads.sum(0), 10).T, '--')
     plt.ylim((-1,None))
     plt.legend(methods+['opt'])
+    
+    plt.figure()
+    plt.plot(util.moving_average(loads8,10).T/capacity*100)
+    plt.ylim((0, None))
+    plt.xlabel('time (s)')
+    plt.ylabel('device occupation (%)')
+    plt.legend(['bs=%d'%bs for bs in bss], ncol=2)
+    plt.tight_layout()
     
     # analyze queue length
     queuelength = np.zeros((len(rsl_list), nlength))
@@ -609,7 +620,7 @@ def __test__():
     ## cdf
     show_delay_distribution(delays, 100, True)
     ## selected some
-    method_idx = [0,1,2,3]
+    method_idx = [0,1,2,4]
     #method_idx = [0,2]
     show_delay_distribution_cmp(delays8, legends, method_idx)
     
@@ -617,7 +628,7 @@ def __test__():
     # delay - overtime
     show_delay_overtime(delays, w, rsl_list)
     
-    show_delay_overtime_cmp(delays8, w, rsl_list, method_idx)
+    show_delay_overtime_cmp(delays8, w, rsl_list, legends, method_idx)
     
     
 # %% test with multiple kinds of jobs (live, certify, refine)
