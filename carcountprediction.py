@@ -10,14 +10,14 @@ import torch.nn as nn
 import numpy as np
 import time
 
-import carcount
+import carcounter
 
 # %% online process with configuration prediction
 
 from util import box_center
 
 class OnlineCarCounterPrediction():
-    def __init__(self, cc:carcount.CarCounter, cmodel:nn.Module,
+    def __init__(self, cc:carcounter.CarCounter, cmodel:nn.Module,
                  num_prev, decay, rs_list, fr_list, feat_mean, feat_std,
                  conf0=None, pboxes_list=None, times_list=None):
         self.cc = cc

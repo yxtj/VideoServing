@@ -12,18 +12,26 @@ class Configuration(typing.NamedTuple):
     roi: bool
     model: str
 
+#Task = namedtuple('Task', ['time', 'frame', 'jid', 'sid', 'fid', 'rs', 'fr'])
+class Task(typing.NamedTuple):
+    frame: np.ndarry
+    sid: int
+    fid: int
+    tag: int
+    time: float
 
 #DetectionResult = namedtuple('DetectionResult', ['box', 'lbl'])
 class DetectionResult(typing.NamedTuple):
     box: np.ndarray
     lbl: int
+    time: float
 
 
 #TrackResult = namedtuple('TrackResult', ['id', 'center', 'box', 'lbl', 'speed'])
 class TrackResult(typing.NamedTuple):
     id: int
-    center: np.ndarray
     box: np.ndarray
     lbl: int
     speed: np.ndarray
+    time: float
 

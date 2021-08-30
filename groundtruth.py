@@ -6,8 +6,8 @@ import time
 
 from videoholder import VideoHolder
 
-from carcount import RangeChecker
-from carcount import box_center
+from app.rangechecker import RangeChecker
+from util import box_center
 
 # %% ground truth functions
 

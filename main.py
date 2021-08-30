@@ -8,8 +8,8 @@ import time
 import visualization
 import videoholder
 
-from detect.yolowrapper import yolowrapper
-import carcount
+import detect.yolowrapper as yolowrapper
+import carcounter
 
 
 # %% running
@@ -21,9 +21,9 @@ def run_offline_profile(file, chk_dir, chk_pos, mdl_name, segment, sel_list):
     #mdl_name = 'yolov5s'
     
     v1 = videoholder.VideoHolder(file)
-    rng = carcount.CheckRange(chk_dir, chk_pos, 0.2, 0.1)
+    rng = carcounter.CheckRange(chk_dir, chk_pos, 0.2, 0.1)
     model = yolowrapper.YOLO_torch(mdl_name, 0.5, (2,3,5,7))
-    conf = carcount.Configuation(1, 480, model)
+    conf = carcounter.Configuation(1, 480, model)
     
     fps = int(np.ceil(v1.fps))
     
@@ -34,7 +34,7 @@ def run_offline_profile(file, chk_dir, chk_pos, mdl_name, segment, sel_list):
     FR_LIST = [1,2,5] + [int(fps/r) for r in [2, 1, 0.5]]
     RS_LIST = [240,360,480,720]
     
-    cc = carcount.CarCounter(v1, rng, conf)
+    cc = carcounter.carcounterer(v1, rng, conf)
     n = int(cc.video.length_second()/segment)
     #assert n == len(sel_list)
     
@@ -59,7 +59,7 @@ def run_offline_profile(file, chk_dir, chk_pos, mdl_name, segment, sel_list):
 # %% make features
 
 import profiling
-from centroidtracker import CentroidTracker
+from track.centroidtracker import CentroidTracker
 import feature
 import groundtruth
 
@@ -71,7 +71,7 @@ def prepare_raw_training_data(video_name_list, fps_list, segment=1,
     fsss = [] # feature speed standard derivation
     fcs = [] # feature count
     for fn, fps in zip(video_name_list, fps_list):
-        pboxes=carcount.load_raw_data('data/%s-raw-%d.npz' % (fn, ft_reso))[4]
+        pboxes=carcounter.load_raw_data('data/%s-raw-%d.npz' % (fn, ft_reso))[4]
         tracker = CentroidTracker(fps/2)
         fa,fm,fs=feature.extract_speed(pboxes,tracker,fps,ft_fr,segment)
         fsas.append(fa)
@@ -365,15 +365,15 @@ def __one_preprocessed_video(vfld, vname, model, rs_list, fr_list,
     pboxes_list=[]
     times_list=[]
     for rs in rs_list:
-        data=carcount.load_raw_data('data/%s-raw-%d.npz' % (vname, rs))
+        data=carcounter.load_raw_data('data/%s-raw-%d.npz' % (vname, rs))
         rng_param = data[0]
         #model_param = data[1]
         times_list.append(data[3])
         pboxes_list.append(data[4])
     v=videoholder.VideoHolder(vfld+'/'+vname+'.mp4')
-    rng = carcount.RangeChecker(*rng_param)
-    conf=carcount.Configuation(2,480,model)
-    cc=carcount.CarCounter(v,rng,conf,0.5)
+    rng = carcounter.RangeChecker(*rng_param)
+    conf=carcounter.Configuation(2,480,model)
+    cc=carcounter.carcounterer(v,rng,conf,0.5)
     occp=OnlineCarCounterPrediction(cc,cmodel,num_prev,decay,rs_list,fr_list,
                         feat_mean,feat_std,(3,3),pboxes_list, times_list)
     
@@ -399,7 +399,7 @@ def __evaluate_conf_video(vname, cntlist, conflist, duration_list):
     gt=groundtruth.load_ground_truth('data/ground-truth-%s.txt'%vname)
     aal = np.zeros(len(duration_list))
     for i,d in enumerate(duration_list):
-        a = carcount.CarCounter.compute_accuray(cntlist, gt, d)
+        a = carcounter.carcounterer.compute_accuray(cntlist, gt, d)
         aal[i] = a.mean()
     return pao, pas, aal
 
