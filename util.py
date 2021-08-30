@@ -37,6 +37,23 @@ def box_center(boxes):
         c = (boxes[:,:2]+boxes[:,2:])/2
     return c
 
+def box_size(boxes):
+    if boxes.ndim == 1:
+        c = np.prod(boxes[2:]-boxes[:2])
+    else:
+        c = np.prod(boxes[:,2:]-boxes[:,:2], 1).sum()
+    return c
+
+def compBAsize(boxes):
+    # global bounding box size and actual sizes
+    if boxes.ndim == 1:
+        s = np.prod(boxes[2:]-boxes[:2])
+        return s,s
+    else:
+        sa = np.prod(boxes[:,2:]-boxes[:,:2], 1).sum()
+        sb = np.prod(boxes[:,2:].max(0)-boxes[:,:2].min(0))
+        return sb, sa
+
 # %% data sampling
 
 def sample_index(n, period, slength, pos='tail'):
