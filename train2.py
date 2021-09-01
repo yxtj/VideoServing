@@ -8,7 +8,7 @@ import torch
 from carcounter2 import load_precompute_data_diff
 from carcounter import load_precompute_data
 from track.centroidtracker import CentroidTracker
-from util import box_center
+import util
 
 # %% prepare training data - load and align raw data
 
@@ -190,14 +190,14 @@ def get_feature(cc, fr_list, time_list, box_list, bsize_list, asize_list,
         for fidx in range(fidx_start, fidx_end, fr):
             boxes = box_list[fidx, fi, mi]
             if len(boxes) > 0:
-                centers = box_center(boxes)
+                centers = util.box_center(boxes)
                 flag = rngchecker.in_track(centers)
                 centers_in_range = centers[flag]
             else:
                 centers_in_range = []
             objects = tracker.update(centers_in_range)
             if mi == 0:
-                bsize, asize = 1, 1
+                bsize, asize = util.compBAsize(boxes)
             else:
                 bsize, asize = bsize_list[fidx, fi], asize_list[fidx, fi]
             feat_gen.update(objects, bsize, asize)
@@ -429,3 +429,4 @@ def __test__():
     
     plt.tight_layout()
     
+
