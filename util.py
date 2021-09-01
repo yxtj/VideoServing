@@ -30,20 +30,6 @@ def compDistance(box, center):
     c = compCenter(box)
     return (c[0]-center[0])**2 + (c[1]-center[1])**2
 
-def box_center(boxes):
-    if boxes.ndim == 1:
-        c = (boxes[:2]+boxes[2:])/2
-    else:
-        c = (boxes[:,:2]+boxes[:,2:])/2
-    return c
-
-def box_size(boxes):
-    if boxes.ndim == 1:
-        c = np.prod(boxes[2:]-boxes[:2])
-    else:
-        c = np.prod(boxes[:,2:]-boxes[:,:2], 1).sum()
-    return c
-
 def compBAsize(boxes):
     # global bounding box size and actual sizes
     if boxes.ndim == 1:
@@ -53,6 +39,41 @@ def compBAsize(boxes):
         sa = np.prod(boxes[:,2:]-boxes[:,:2], 1).sum()
         sb = np.prod(boxes[:,2:].max(0)-boxes[:,:2].min(0))
         return sb, sa
+
+def box_center(boxes):
+    if boxes.ndim == 1:
+        c = (boxes[:2]+boxes[2:])/2
+    else:
+        c = (boxes[:,:2]+boxes[:,2:])/2
+    return c
+
+def box_size(boxes):
+    if len(boxes) == 0:
+        return []
+    if boxes.ndim == 1:
+        s = np.prod(boxes[2:]-boxes[:2])
+    else:
+        s = np.prod(boxes[:,2:]-boxes[:,:2], 1)
+    return s
+
+def box_aratio(boxes):
+    if len(boxes) == 0:
+        return []
+    if boxes.ndim == 1:
+        w, h = boxes[2:] - boxes[:2]
+        r = w / h
+    else:
+        w = boxes[:,2] - boxes[:,0]
+        h = boxes[:,3] - boxes[:,1]
+        r = w / h
+    return r
+
+def box_super(boxes):
+    if boxes.ndim == 1:
+        r = boxes
+    else:
+        r = np.concatenate([boxes[:,:2].min(0), boxes[:,2:].max(0)])
+    return r
 
 # %% data sampling
 
