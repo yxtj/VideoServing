@@ -10,7 +10,7 @@ from model.framedecision import DecisionModel
 
 from videoholder import VideoHolder
 from track import centroidtracker
-from util import box_center
+import util
 
 __all__ = ['CarRecord',  'FeatureExtractor', 'CarCounter']
 
@@ -36,84 +36,89 @@ class CarRecord():
         
 
 class FeatureExtractor():
-    def __init__(self, dim_conf=2, num_prev=2, decay=1):
-        self.dim_conf = dim_conf
+    def __init__(self, dim_conf=2, num_prev=1, clear_threshold=10):
         self.dim_speed = 3 # average/median/std of speed
-        self.dim_size = 4
-        self.dim_unit = self.dim_speed + self.dim_size + 1 + dim_conf # speed, size, count, confs
-        self.dim_feat = num_prev*self.dim_unit #+ self.dim_speed
+        self.dim_size = 1+3 # avg size of global bbox, ams of object size
+        self.dim_aratio = 3 # ams of aspect ratio
+        self.dim_count = 2 # average/std of object number
+        self.dim_conf = dim_conf
+        self.dim_unit = self.dim_speed + self.dim_size + self.dim_aratio + self.dim_count + dim_conf
+        self.dim_feat = (num_prev+1)*self.dim_unit
         self.num_prev = num_prev
-        self.decay = decay
+        self.threshold = clear_threshold
         # running time data
+        self.sidx = 0
         self.feature = np.zeros(self.dim_feat)
         self.buffer = {} # last location for speed
-        self.stemp = [] # speed of current segment
-        self.size_hist = np.zeros(2)
-        self.zbtemp = [] # bounging box size of current segment
-        self.zatemp = [] # active area size of current segment
+        self.stemp = [] # speed of each object
+        self.zbtemp = [] # global bounging box size (bbox for all objects)
+        self.zatemp = [] # active area size of each objects
+        self.rtemp = [] # aspect ratio of each object
+        self.ctemp = [] # number of objects
     
     def reset(self):
         self.feature = np.zeros(self.dim_feat)
         self.buffer = {}
         self.stemp = []
+        self.zbtemp = []
+        self.zatemp = []
+        self.rtemp = []
+        self.ctemp = []
     
-    def update(self, objects, bsize, asize):
+    def update(self, objects, elapse, boxes):
         speeds = []
         for oid, c in objects.items():
             if oid in self.buffer:
-                old = self.buffer[oid]
-                s = c - old
+                old, _ = self.buffer[oid]
+                s = (c - old)/elapse
                 speeds.append(s)
-                self.buffer[oid] = c
+                self.buffer[oid] = (c, self.sidx)
             else:
-                self.buffer[oid] = c
+                self.buffer[oid] = (c, self.sidx)
         self.stemp.extend(speeds)
-        self.size_hist = self.size_hist*0.2 + (1-0.2)*np.array([bsize, asize])
-        self.zbtemp.append(bsize)
-        self.zatemp.append(asize)
+        if len(boxes) != 0:
+            bz = util.box_size(util.box_super(boxes))
+            self.zbtemp.append(bz)
+            azs = util.box_size(boxes)
+            self.zatemp.extend(azs)
+            r = util.box_aratio(boxes)
+            self.rtemp.extend(r)
+        self.ctemp.append(len(boxes))
     
-    def move(self, cnt, conf):
-        off = self.dim_unit * (self.num_prev - 1)
+    def move(self, conf):
+        self.sidx += 1
+        # clear buffer
+        bound = self.sidx - self.threshold
+        self.buffer = { k:(c,p) for k,(c,p) in self.buffer.items() if p > bound }
         # move existing slots
         if self.num_prev > 0:
             self.feature[:-self.dim_unit] = self.feature[self.dim_unit:]
-            if self.decay != 1:
-                # decay the speed
-                for i in range(self.num_prev):
-                    a = i*self.dim_unit
-                    b = a+self.dim_speed
-                    self.feature[a:b] *= self.decay
         # put current buffer into feature
         if len(self.stemp) == 0:
-            sa = sm = ss = 0.0
+            ss_s = (0.0, 0.0, 0.0)
         else:
-            sa = np.mean(self.stemp)
-            sm = np.median(self.stemp)
-            ss = np.std(self.stemp)
-        zb = np.mean(self.zbtemp)
-        za = np.mean(self.zatemp)
-        f = np.array([sa, sm, ss, zb, za, *self.size_hist, cnt, *conf])
+            ss_s = FeatureExtractor.__ams_of_list__(self.stemp)
+        ss_bz = np.mean(self.zbtemp) if len(self.zbtemp) > 0 else 0.0
+        ss_az = FeatureExtractor.__ams_of_list__(self.zatemp)
+        ss_r = FeatureExtractor.__ams_of_list__(self.rtemp)
+        ss_c = [np.mean(self.ctemp), np.std(self.ctemp)]
+        f = np.array([*ss_s, ss_bz, *ss_az, *ss_r, *ss_c, *conf])
         #f = (f - self.feat_mean)/self.feat_std
-        self.feature[off:] = f
+        self.feature[-self.dim_unit:] = f
         
-    def get(self, frame_level=False):
-        if not frame_level:
-            return self.feature
+    def get(self):
+        return self.feature
+    
+    def __ams_of_list__(temp):
+        if len(temp) == 0:
+            a,m,s = 0.0, 0.0, 0.0
         else:
-            if len(self.stemp) == 0:
-                sa = sm = ss = 0.0
-            else:
-                sa = np.mean(self.stemp)
-                sm = np.median(self.stemp)
-                ss = np.std(self.stemp)
-            zb = np.mean(self.zbtemp)
-            za = np.mean(self.zatemp)
-            f = self.feature.clone()
-            off = self.dim_unit * (self.num_prev - 1)
-            oend = off+self.dim_speed+self.dim_size
-            f[off:oend] = np.array([sa, sm, ss, zb, za, *self.size_hist])
-            return f
-                
+            a = np.mean(temp)
+            m = np.median(temp)
+            s = np.std(temp)
+        return a,m,s
+    
+    
 
 class CarCounter():
     
@@ -121,7 +126,7 @@ class CarCounter():
                  dmodel, rs0, fr0, # detect
                  disappear_time:float=0.8, # track
                  fpp:FramePreprocessor=None, fmodel:DecisionModel=None, # frame decision
-                 feat_gen:FeatureExtractor=None, # feature
+                 feat_gen:FeatureExtractor=None, cmodel=None, # configure prediction
                  rs_list=None, fr_list=None,
                  pboxes_list=None, times_list=None,
                  bsize_list=None, asize_list=None
@@ -133,6 +138,7 @@ class CarCounter():
         self.rscale = rs0 / max(video.width, video.height) if rs0 else 1
         self.fr = fr0
         self.feat_gen = feat_gen
+        self.cmodel = cmodel
         self.dsap_time = disappear_time
         self.dsap_frame = max(1, int(disappear_time*video.fps))
         n = max(0, int(disappear_time*video.fps/self.fr))
@@ -179,6 +185,8 @@ class CarCounter():
             self.fpp.reset()
         if self.feat_gen is not None:
             self.feat_gen.reset()
+        self.change_rs(self.rs)
+        self.change_fr(self.fr)
         self.obj_info = {}
         self.sidx = 0
         
@@ -234,35 +242,30 @@ class CarCounter():
                     sz = max(w, h)
                     sz = int(sz*self.rscale) if self.rs else sz
                     boxes = self.recognize_cars(f, sz)
-                    bsize, asize = w*h/np.prod(frame.shape), mask.mean()/255
                 else:
                     boxes = np.zeros((0,4))
-                    bsize, asize = 0, 0
             else:
                 boxes = self.recognize_cars(frame, rs)
-                bsize, asize = 1, 1
             t1 = time.time() - t1
         elif self.rs_list is not None:
             # use pre-computed result (resolution-frame)
             rs_idx = self.rs_list.index(rs)
             boxes = self.pboxes_list[rs_idx][fidx]
-            bsize, asize = 1, 1
             t1 = self.times_list[rs_idx][fidx]
         else:
             # use pre-compuated result (frame)
             boxes = self.pboxes_list[fidx]
             t1 = self.times_list[fidx]
-            bsize, asize = self.bsize_list[fidx], self.asize_list[fidx]
-        return t1, boxes, bsize, asize
+        return t1, boxes
    
     def update(self, fidx, rs, m_diff=False):
         # part 1: get object boxes from image
-        t1, boxes, bsize, asize = self.__get_boxes__(fidx, rs, m_diff)
+        t1, boxes = self.__get_boxes__(fidx, rs, m_diff)
         # part 2: get counting from boxes (filtering, tracking, checking)
         t2 = time.time()
         # filter cars that are far from the checking line
         if len(boxes) > 0:
-            centers = box_center(boxes)
+            centers = util.box_center(boxes)
             flag = self.range.in_track(centers)
             centers_in_range = centers[flag]
         else:
@@ -272,7 +275,7 @@ class CarCounter():
         c = self.count(fidx, objects)
         # part 3: generate features
         if self.feat_gen is not None:
-            self.feat_gen.update(objects, bsize, asize)
+            self.feat_gen.update(objects, self.fr/self.video.fps, boxes)
         t2 = time.time() - t2
         return c, t1 + t2
     
@@ -318,12 +321,13 @@ class CarCounter():
             if self.feat_gen is not None:
                 # update feature
                 tt = time.time()
-                self.feat_gen.move(cnt, (self.rs, self.fr, 0))
-                t+= time.time() - tt
+                self.feat_gen.move((self.rs, self.fr))
+                t += time.time() - tt
             if self.cmodel is not None:
                 # predict next configuration
                 tt = time.time()
                 feature = self.feat_gen.get()
+                #rs, fr = self.cmodel(feature)
                 rs, fr, mi = self.cmodel(feature)
                 self.rs = rs
                 self.fr = fr
@@ -365,7 +369,7 @@ class CarCounter():
             f = self.video.get_frame(idx)
             boxes = self.recognize_cars(f, self.rs)
             if filtering and len(boxes) > 0:
-                centers = box_center(boxes)
+                centers = util.box_center(boxes)
                 flag = self.range.in_track(centers)
                 boxes = boxes[flag]
 
@@ -409,7 +413,7 @@ class CarCounter():
             else:
                 boxes = np.zeros((0,4))
             if filtering and len(boxes) > 0:
-                centers = box_center(boxes)
+                centers = util.box_center(boxes)
                 flag = self.range.in_track(centers)
                 boxes = boxes[flag]
 
@@ -454,7 +458,7 @@ class CarCounter():
             bs = boxes[idx]
             if len(bs) == 0:
                 continue
-            cs = box_center(bs)
+            cs = util.box_center(bs)
             flag = self.range.in_track(cs)
             objects = self.tracker.update(cs[flag])
             c += self.count(idx, objects)
