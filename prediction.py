@@ -216,6 +216,22 @@ def gen_feature_time_accuracy(cc, box_file_list, rs_list, fr_list, ground_truth)
             features[ridx, fidx] = f
     return features, times, accuracies
 
+def match_feature_accuracy(features, accuracies, num_prev):
+    nrs, nfr, n, ndim = features.shape
+    assert accuracies.shape == (nrs, nfr, n)
+    m = n - num_prev - 1 - 1 # head prune: num_prev + 1, tail prune: 1
+    f = np.zeros((m*nrs*nfr, ndim))
+    a = np.zeros((m*nrs*nfr, nrs, nfr))
+    off = 0
+    for ridx in range(nrs):
+        for fidx in range(nfr):
+            for i in range(off, n-1):
+                f[off] = features[ridx, fidx, i, :]
+                a[off] = accuracies[:,:,i+1]
+                off += 1
+    return f, a
+
+
 def gen_feature_one_config(feat_gen, tracker, rngchecker, nsecond, fps,
                     rs_list, fr_list, boxes_list, conf_list):
     feature = np.zeros((nsecond, feat_gen.dim_feat))
@@ -288,7 +304,13 @@ def train_epoch(loader,model,optimizer,loss_fn):
         lss.append(l.item())
     return lss
 
-
+def evaluate(x, y, model):
+    model.eval()
+    with torch.no_grad():
+        p = model(x)
+    p = p.view((len(p), -1)).argmax(1)
+    # TODO: finish this
+    
 
 # %% test
 
@@ -308,6 +330,8 @@ def __test__():
     rs_list = [240,360,480,720]
     fps_list = [30, 10, 5, 2, 1]
     
+    num_prev = 2
+    
     len_each = []
     features = []
     times = []
@@ -317,7 +341,7 @@ def __test__():
         print(vn, fr_list)
         v = VideoHolder(video_folder+'/%s.mp4'%vn)
         rng = RangeChecker(*rng_param_list[vidx])
-        feat_gen = carcounter2.FeatureExtractor(2,2)
+        feat_gen = carcounter2.FeatureExtractor(2, num_prev)
         cc = carcounter2.CarCounter(v,rng,None,240,2,0.8,None,feat_gen=feat_gen)
         box_file_list = ['data/%s/%s-raw-%d.npz'%(vn,vn,rs) for rs in rs_list]
         f, t, a = gen_feature_time_accuracy(cc, box_file_list, rs_list, fr_list, 'data/%s/ground-truth-%s.txt'%(vn,vn))
@@ -347,8 +371,8 @@ def __test__():
     
     #x = features.transpose((2,0,1,3)).reshape((nele, -1, 42))
     #y = acc2range(accuracies, acc_range).transpose((2,0,1).reshape((-1, 42)))
-    x = features.mean((0,1))
-    y = acc2range(accuracies, acc_range)
+    x, y = match_feature_accuracy(features, accuracies, num_prev)
+    y = acc2range(y, acc_range)
     
     x = torch.from_numpy(x).float()
     y = torch.from_numpy(y).long()
