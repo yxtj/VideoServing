@@ -60,8 +60,40 @@ def run_offline_profile(file, chk_dir, chk_pos, mdl_name, segment, sel_list):
 
 import profiling
 from track.centroidtracker import CentroidTracker
-import feature
 import groundtruth
+
+def extract_speed(pboxes, tracker, fps:int, fr:int, segment:int, abs=True):
+    # pboxes is a list of numpy.ndarray for bounding boxes
+    n_frm = len(pboxes)
+    n_sec = n_frm // fps
+    n_seg = n_sec // segment
+    #n = n_seg * segment
+    speed_avg = np.zeros(n_seg)
+    speed_med = np.zeros(n_seg)
+    speed_std = np.zeros(n_seg)
+    tracker.reset()
+    buffer = {}
+    for i in range(n_seg):
+        idx_base = i*segment
+        speeds = []
+        for j in range(0, fps*segment, fr):
+            centers = pboxes[idx_base + j]
+            objs = tracker.update(centers)
+            for oid, c in objs.items():
+                if oid in buffer:
+                    old = buffer[oid]
+                    s = c - old
+                    speeds.append(s)
+                    buffer[oid] = c
+                else:
+                    buffer[oid] = c
+        if len(speeds) != 0:
+            if abs is True:
+                speeds = np.abs(speeds)
+            speed_avg[i] = np.mean(speeds)
+            speed_med[i] = np.median(speeds)
+            speed_std[i] = np.std(speeds)
+    return speed_avg, speed_med, speed_std
 
 def prepare_raw_training_data(video_name_list, fps_list, segment=1,
                               acc_bound=0.9, ft_reso=480, ft_fr=2):
@@ -73,7 +105,7 @@ def prepare_raw_training_data(video_name_list, fps_list, segment=1,
     for fn, fps in zip(video_name_list, fps_list):
         pboxes=carcounter.load_raw_data('data/%s-raw-%d.npz' % (fn, ft_reso))[4]
         tracker = CentroidTracker(fps/2)
-        fa,fm,fs=feature.extract_speed(pboxes,tracker,fps,ft_fr,segment)
+        fa,fm,fs=extract_speed(pboxes,tracker,fps,ft_fr,segment)
         fsas.append(fa)
         fsms.append(fm)
         fsss.append(fs)
