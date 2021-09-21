@@ -6,6 +6,7 @@ Created on Sun Feb  7 03:09:50 2021
 """
 
 import numpy as np
+import scipy.spatial.distance
 
 # %% bound box
 
@@ -74,6 +75,12 @@ def box_super(boxes):
     else:
         r = np.concatenate([boxes[:,:2].min(0), boxes[:,2:].max(0)])
     return r
+
+def box_distance(boxes):
+    centers = box_center(boxes)
+    D = scipy.spatial.distance.cdist(centers, centers)
+    return D
+    
 
 # %% data sampling
 
