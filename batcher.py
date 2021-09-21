@@ -597,7 +597,7 @@ def __test__():
     plt.hist(queuelength.T, 8)
     plt.legend(rsl_list)
     plt.xlabel('queue length')
-    plt.ylabel('number')
+    plt.ylabel('occurence')
     plt.tight_layout()
     
     plt.figure()
