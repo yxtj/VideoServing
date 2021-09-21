@@ -3,6 +3,31 @@
 import numpy as np
 import util
 
+
+def summarize(data, method):
+    if method == 'min':
+        return np.min(data)
+    elif method == 'max':
+        return np.max(data)
+    elif method == 'mean':
+        return np.mean(data)
+    elif method == 'median':
+        return np.median(data)
+    elif method == 'std':
+        return np.std(data)
+    elif method == 'absmax':
+        return np.max(np.abs(data))
+    elif method == 'absmin':
+        return np.min(np.abs(data))
+    else:
+        raise ValueError('Unsupported mehtod: '+str(method))
+
+def summarize_list(data, method_list):
+    if len(data) == 0:
+        return tuple( 0.0 for i in range(len(method_list)) )
+    return tuple( summarize(data, m) for m in method_list )
+
+
 class FeatureExtractor():
     def __init__(self, dim_conf=2, num_prev=1, clear_threshold=10):
         self.dim_size = 1+5 # avg size of global bbox, min/median/max/mean/std of object size
@@ -21,12 +46,13 @@ class FeatureExtractor():
         # running time data
         self.sidx = 0
         self.feature = np.zeros(self.dim_feat)
-        self.buffer = {} # last location for speed
+        self.buffer = {} # last position (bbox)
         self.bf_size = [] # each object's bounding box size
         self.bf_gsize = [] # global bounging box size (bbox for all objects)
         self.bf_distance = []
         self.bf_speed = [] # speed of each object
-        self.bf_aratio = [] # aspect ratio of each object
+        self.bf_cr_size= [] # size cr of each object
+        self.bf_cr_aratio = [] # aspect ratio cr of each object
         self.bf_count = [] # number of objects
     
     def reset(self):
@@ -39,87 +65,54 @@ class FeatureExtractor():
         self.bf_aratio = []
         self.bf_count = []
     
-    def update(self, objects, etime, boxes):
-        speeds = []
-        for oid, c in objects.items():
+    def update(self, objects, etime):
+        '''
+        Params:
+            objects: dictionary of {id:box} for objects.
+            etime: elapsed time since last update.
+        '''
+        # tracking-based features (speed, size-cr, aspect-cr)
+        for oid, box in objects.items():
+            sz = util.box_size(box)
+            cn = util.box_center(box)
+            ar = util.box_aratio(box)
+            # existing object, add tracking-based features (speed, size-cr, aspect-cr)
             if oid in self.buffer:
-                old, _ = self.buffer[oid]
-                s = (c - old)/etime
-                speeds.append(s)
-                self.buffer[oid] = (c, self.sidx)
-            else:
-                self.buffer[oid] = (c, self.sidx)
-            a = c
-        self.bf_speed.extend(speeds)
-        if len(boxes) != 0:
-            # global bounding box size
-            gbz = util.box_size(util.box_super(boxes))
-            self.bf_gsize.append(gbz)
-            # object size
-            ozs = util.box_size(boxes)
-            self.zatemp.extend(ozs)
-            # distance
-            d = util.box_distance(boxes)
-            u = np.triu_indices(len(boxes))
-            self.bf_distance(d[u])
+                obox, (osz, ocn, oar), _ = self.buffer[oid]
+                self.bf_speed.append((cn-ocn)/etime)
+                self.bf_cr_size.append((sz-osz)/etime)
+                self.bf_cr_aratio.append((ar-oar)/etime)
+            # static individual features (size)
+            self.buffer[oid] = (box, (sz, cn, ar), self.sidx)
+            self.bf_size.append(sz)
+        # static global features (gsize, distance)
+        boxes = [b for k,b in objects.items()]
+        gbz = util.box_size(util.box_super(boxes))
+        self.bf_gsize.append(gbz)
+        d = util.box_distance(boxes)
+        u = np.triu_indices(len(boxes), 1)
+        self.bf_distance.extend(d[u])
         self.bf_count.append(len(boxes))
     
     def move(self, conf):
         self.sidx += 1
         # clear buffer
         bound = self.sidx - self.threshold
-        self.buffer = { k:(c,p) for k,(c,p) in self.buffer.items() if p > bound }
+        self.buffer = { k:(b,s,p) for k,(b,s,p) in self.buffer.items() if p > bound }
         # move existing slots
         if self.num_prev > 0:
             self.feature[:-self.dim_unit] = self.feature[self.dim_unit:]
         # put current buffer into feature
-        if len(self.stemp) == 0:
-            ss_s = (0.0, 0.0, 0.0)
-        else:
-            ss_s = FeatureExtractor.__ams_of_list__(self.stemp)
-        ss_bz = np.mean(self.zbtemp) if len(self.zbtemp) > 0 else 0.0
-        ss_az = FeatureExtractor.__ams_of_list__(self.zatemp)
-        ss_r = FeatureExtractor.__ams_of_list__(self.rtemp)
-        ss_c = [np.mean(self.ctemp), np.std(self.ctemp)]
-        f = np.array([*ss_s, ss_bz, *ss_az, *ss_r, *ss_c, *conf])
-        #f = (f - self.feat_mean)/self.feat_std
+        f_gsize = summarize_list(self.bf_gsize, ['mean'])
+        f_size = summarize_list(self.bf_size, ['min','median','max','mean','std'])
+        f_dist = summarize_list(self.bf_distance, ['min','median','max','mean','std'])
+        f_speed = summarize_list(self.bf_speed, ['min','median','max','mean','std'])
+        f_crsize= summarize_list(self.bf_cr_size, ['min','median','max','mean','std'])
+        f_craratio = summarize_list(self.bf_cr_aratio, ['min','median','max','mean','std'])
+        f_count = summarize_list(self.bf_count, ['min','median','max','mean','std'])
+        f = [*f_gsize, *f_size, *f_dist, *f_speed, *f_crsize, *f_craratio, *f_count, *conf]
         self.feature[-self.dim_unit:] = f
         
     def get(self):
         return self.feature
-    
-    @staticmethod
-    def extract(data, method):
-        if method == 'min':
-            return np.min(data)
-        elif method == 'max':
-            return np.max(data)
-        elif method == 'mean':
-            return np.mean(data)
-        elif method == 'median':
-            return np.median(data)
-        elif method == 'std':
-            return np.std(data)
-        elif method == 'absmax':
-            return np.max(np.abs(data))
-        elif method == 'absmin':
-            return np.min(np.abs(data))
-    
-    @staticmethod
-    def extract_feature(data, method_list):
-        if len(data) == 0:
-            return tuple( 0.0 for i in range(len(method_list)) )
-        return tuple( FeatureExtractor.extract(data, m) for m in method_list )
-        
-    
-    def __ams_of_list__(temp):
-        if len(temp) == 0:
-            a,m,s = 0.0, 0.0, 0.0
-        else:
-            a = np.mean(temp)
-            m = np.median(temp)
-            s = np.std(temp)
-        return a,m,s
-    
-    
     
