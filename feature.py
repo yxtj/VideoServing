@@ -38,7 +38,7 @@ class FeatureExtractor():
         self.dim_count = 4 # mean/min/max/std of object number
         self.dim_conf = dim_conf
         self.dim_unit = self.dim_size + self.dim_distance + \
-            self.dim_speed + self.sratio + self.dim_aratio + \
+            self.dim_speed + self.dim_sratio + self.dim_aratio + \
             self.dim_count + self.dim_conf
         self.dim_feat = (num_prev+1)*self.dim_unit
         self.num_prev = num_prev
@@ -86,7 +86,7 @@ class FeatureExtractor():
             self.buffer[oid] = (box, (sz, cn, ar), self.sidx)
             self.bf_size.append(sz)
         # static global features (gsize, distance)
-        boxes = [b for k,b in objects.items()]
+        boxes = np.array([b for k,b in objects.items()])
         gbz = util.box_size(util.box_super(boxes))
         self.bf_gsize.append(gbz)
         d = util.box_distance(boxes)
@@ -106,13 +106,41 @@ class FeatureExtractor():
         f_gsize = summarize_list(self.bf_gsize, ['mean'])
         f_size = summarize_list(self.bf_size, ['min','median','max','mean','std'])
         f_dist = summarize_list(self.bf_distance, ['min','median','max','mean','std'])
-        f_speed = summarize_list(self.bf_speed, ['min','median','max','mean','std'])
+        f_speed = summarize_list(self.bf_speed, ['mean','median','max','std'])
         f_crsize= summarize_list(self.bf_cr_size, ['min','median','max','mean','std'])
-        f_craratio = summarize_list(self.bf_cr_aratio, ['min','median','max','mean','std'])
-        f_count = summarize_list(self.bf_count, ['min','median','max','mean','std'])
+        f_craratio = summarize_list(self.bf_cr_aratio, ['mean','median','absmax','std'])
+        f_count = summarize_list(self.bf_count, ['min','max','mean','std'])
         f = [*f_gsize, *f_size, *f_dist, *f_speed, *f_crsize, *f_craratio, *f_count, *conf]
         self.feature[-self.dim_unit:] = f
         
     def get(self):
         return self.feature
     
+# %% test
+
+def __test__():
+    def dummy_box(oids):
+        res = {}
+        for i in oids:
+            t = np.random.random((2,2))
+            a = t.min(0)
+            b = t.max(0)
+            res[i] = np.concatenate([a,b])
+        return res
+    
+    max_rs = 1080
+    
+    fe = FeatureExtractor()
+    print(fe.dim_unit, fe.dim_feat)
+    
+    fe.update(dummy_box([0,1,2]), 0.5)
+    fe.update(dummy_box([0,1,2]), 0.5)
+    fe.move((480/max_rs,2))
+    print(fe.get())
+    fe.update(dummy_box([1,2]), 0.33)
+    fe.update(dummy_box([2,3]), 0.33)
+    fe.update(dummy_box([2,3,4]), 0.33)
+    fe.move((360/max_rs,3))
+    print(fe.get())
+    
+
