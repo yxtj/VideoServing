@@ -4,13 +4,13 @@
 import typing.NamedTuple
 import numpy as np
 
-#Configuration = namedtuple('Configuration', ['rsl', 'fps', 'roi', 'model'])
+#Configuration = namedtuple('Configuration', ['fps', 'rsl', 'roi', 'model'])
 
 class Configuration(typing.NamedTuple):
-    rsl: int
     fps: int
-    roi: bool
-    model: str
+    rsl: int
+    #roi: bool
+    #model: str
 
 #Task = namedtuple('Task', ['time', 'frame', 'jid', 'sid', 'fid', 'rs', 'fr'])
 class Task(typing.NamedTuple):
