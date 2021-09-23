@@ -6,7 +6,7 @@ from common import DetectionResult
 class StreamProcessing():
     
     def __init__(self, sid, knobs, f_post, cinterval=30, clength=1, rbound=0.3,
-                 track_mthd='sort', cconf=None, rconf=None):
+                 track_mthd='sort', cconf=None, rconf=None, **kwargs):
         self.sid = sid
         #self.knobs = knobs
         self.knob_fps = knobs['fps']
@@ -14,6 +14,7 @@ class StreamProcessing():
         self.cinterval = cinterval # certify - sample interval
         self.clength = clength # certify - sample length
         self.rbound = rbound # refine - threshold
+        self.set_tracker(track_mthd, **kwargs)
         # buffers
         self.bfFrame = []
         self.bfTask = []
@@ -26,6 +27,16 @@ class StreamProcessing():
         # intermediate
         self.fid = 0
         self.fid_
+    
+    def set_tracker(self, track_mthd, **kwargs):
+        assert track_mthd in ['center', 'sort']
+        if track_mthd == 'center':
+            from track.centroidtracker import CentroidTracker
+            self.tracker = CentroidTracker(kwargs['tck_age'])
+        elif track_mthd == 'sort':
+            from track.sorttracker import SortTracker
+            self.tracker = SortTracker(kwargs['tck_age'], kwargs['tck_age'], 
+                                       iou_threshold=kwargs['tck_min_iou'])
                 
     def task_frame(self, frame):
         pass
