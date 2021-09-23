@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 """
 SORT: A Simple, Online and Realtime Tracker
+Copyright (C) 2016-2020 Alex Bewley alex@bewley.ai
+
+Modified to tracker by Tian Zhou at Sep. 2021.
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -177,7 +180,7 @@ def associate_detections_to_trackers(detections,trackers,iou_threshold = 0.3):
     return matches, np.array(unmatched_detections), np.array(unmatched_trackers)
 
 
-class Sort(object):
+class SortTracker(object):
     def __init__(self, max_age=2, max_keep=1, min_hits=1, iou_threshold=0.3):
         """
         Params:
@@ -200,7 +203,11 @@ class Sort(object):
         self.trackers = []
         self.frame_count = 0
         self.box_count = 0
-
+    
+    def set_max_disappear(self, n):
+        self.max_age = n
+        self.max_keep = max(0, n-1)
+        
     def update(self, dets=np.empty((0, 4))):
         """
         Params:

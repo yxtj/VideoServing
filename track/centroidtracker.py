@@ -31,6 +31,9 @@ class CentroidTracker():
         self.objects = state[1]
         self.disappeared = state[2]
         
+    def set_max_disappear(self, n):
+        self.maxDisappeared = n
+        
     def register(self, centroid, box):
         # when registering an object we use the next available object
         # ID to store the centroid
