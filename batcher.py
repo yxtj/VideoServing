@@ -392,6 +392,29 @@ def analyze_delay_overtime(delays, workload, rsl_list):
 
 # %% plotting script
 
+def show_queue_length(details, rsl_list, nlength, ql_max=None, nbin=8, log=False):
+    queuelength = np.zeros((len(rsl_list), nlength))
+    num_process = np.zeros(nlength)
+    for t, lvl, rs, bs, load, ql in details:
+        ind_t = int(t)
+        queuelength[:,ind_t] += ql[0] # live queue only
+        num_process[ind_t] += 1
+    queuelength /= num_process # average queue length of each time slot
+    print((queuelength<bs).mean(1))
+    
+    if ql_max is None:
+        ql_max = queuelength.max()
+    
+    plt.figure()
+    plt.hist(queuelength.T, nbin, (0, ql_max))
+    plt.legend(rsl_list)
+    plt.xlabel('queue length')
+    plt.ylabel('occurence')
+    if log:
+        plt.yscale('log')
+    plt.tight_layout()
+
+
 def show_delay_distribution(delays, nbin=100, cdf=True, bar=False, newfig=True):
     d = np.concatenate([ d.sum(1) for d in delays ])
     hh,xh=np.histogram(d, nbin)
@@ -481,7 +504,7 @@ def __test__():
     
     import profiling
     vn_list = ['s3', 's4', 's5', 's7']
-    fps_list = [25,30,20,30]
+    vfps_list = [25,30,20,30]
     segment = 1
     
     pts=[]
@@ -498,7 +521,7 @@ def __test__():
     
     nlength = 400
     workload = np.zeros((len(vn_list), nlength, 2), int)
-    for i, fps in enumerate(fps_list):
+    for i, fps in enumerate(vfps_list):
         if fps == 20:
             fr_list = profiling.FR_FOR_20
         elif fps == 25:
@@ -550,7 +573,7 @@ def __test__():
     loads, rest_load, delays, details = simulate_process(tasks, nfbefore[:,-1], fh, nlength, speed_factor)
     
     methods = ['come', 'small', 'finish', 'delay', 'priority', 'awt']
-    legends = ['FCFS', 'SJFS', 'FFFS', 'LFFS', 'Priority', 'LWFS']
+    legends = ['FCFS', 'SJFS', 'MLFS', 'LFFS', 'Priority', 'LWFS']
     bss = [1,2,4,8]
     
     loads8 = np.zeros((len(methods), nlength))
@@ -592,14 +615,7 @@ def __test__():
     print((queuelength<bs).mean(1))
     
     ql_max = queuelength.max()
-    
-    plt.figure()
-    plt.hist(queuelength.T, 8)
-    plt.legend(rsl_list)
-    plt.xlabel('queue length')
-    plt.ylabel('occurence')
-    plt.tight_layout()
-    
+        
     plt.figure()
     for ql in queuelength:
         hh,xh=np.histogram(ql, 30, (0, ql_max))
@@ -611,6 +627,7 @@ def __test__():
     plt.ylabel('PDF')
     plt.tight_layout()
     
+    show_queue_length(details, rsl_list, nlength, 8, True)
     
     # analyze delay
     
