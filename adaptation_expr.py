@@ -162,15 +162,16 @@ def __test__():
     
     # zoomin comparison for workload
     plt.figure()
-    plt.plot(util.moving_average(ao_t,10)*WLF, color=colors[1]) # profile-once
-    plt.plot((util.moving_average(ap_t,5)+ap_pt)*WLF, color=colors[2]) # profile-period
-    plt.plot(util.moving_average(pt,10)*WLF, color=colors[3]) # predict
+    plt.plot(util.moving_average(ao_t,10)*WLF) # profile-once
+    plt.plot((util.moving_average(ap_t,5)+ap_pt)*WLF) # profile-period
+    plt.plot(util.moving_average(pt,10)*WLF) # predict
     plt.xlabel('time (s)')
     plt.ylabel('resource (GFLOPS)')
     #plt.ylabel('resource (s)')
     plt.legend(['prf-once','prf-period','prf-free'])
-    plt.ylim((0,10))
-    #plt.yscale('log')
+    #plt.ylim((0,10))
+    plt.yscale('log')
+    plt.ylim(0.5,5000)
     plt.tight_layout()
 
     # accuracy
