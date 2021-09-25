@@ -81,6 +81,7 @@ class FrameHolder():
             self.max_pbs = mat_pt.shape[1]
             assert self.max_pbs >= bs
         
+        # assert m in ['come', 'small', 'finish', 'delay', 'priority', 'awt']
         self.set_ready_method(policy, **kwargs)
         self.tid_lock = Lock()
         self.tid = 0
@@ -191,60 +192,106 @@ class FrameHolder():
             self.ready = self.ready_awt
         
     def ready_come_first(self):
+        bf = []
         for lvl in range(self.levels):
             t = [q.info[0].time if q.size()>=self.batchsize else np.inf
                  for q in self.queues[lvl]]
             ind = np.argmin(t)
             if not np.isinf(t[ind]):
                 return lvl, self.rsl_list[ind]
+            # no queue contains a full batch
+            t = [q.info[0].time if q.size()>0 else np.inf for q in self.queues[lvl]]
+            ind = np.argmin(t)
+            if not np.isinf(t[ind]):
+                bf.append((lvl, self.rsl_list[ind]))
+        if len(bf) != 0:
+            return bf[0]
         return None, None
     
     def ready_small_first(self):
+        bf = []
         for lvl in range(self.levels):
             for i in range(self.nrsl):
                 q = self.queues[lvl][i]
                 if q.size() >= self.batchsize:
                     return lvl, self.rsl_list[i]
+                # no queue contains a full batch
+                elif q.size() > 0:
+                    bf.append((lvl, self.rsl_list[i]))
+        if len(bf) != 0:
+            return bf[0]
         return None, None
    
     def ready_finish_first(self, now=None):
         if now is None:
             now = time.time()
+        bf = []
         for lvl in range(self.levels):
             etds = self.__estimated_delays__(lvl, now, np.inf, self.batchsize)
             ind = etds.argmin()
             if not np.isinf(etds[ind]):
                 return lvl, self.rsl_list[ind]
+            # no queue contains a full batch
+            etds = self.__estimated_delays__(lvl, now, np.inf, 1)
+            ind = etds.argmin()
+            if not np.isinf(etds[ind]):
+                bf.append((lvl, self.rsl_list[ind]))
+        if len(bf) != 0:
+            return bf[0]
         return None, None
 
     def ready_max_delay_first(self, now=None):
         if now is None:
             now = time.time()
+        bf = []
         for lvl in range(self.levels):
             etds = self.__estimated_delays__(lvl, now, -np.inf, self.batchsize)
             ind = etds.argmax()
-            if not np.isinf(etds[ind]):
+            if not np.isinf(etds[ind]): 
                 return lvl, self.rsl_list[ind]
+            # no queue contains a full batch
+            etds = self.__estimated_delays__(lvl, now, -np.inf, 1)
+            ind = etds.argmax()
+            if not np.isinf(etds[ind]): 
+                bf.append((lvl, self.rsl_list[ind]))
+        if len(bf) != 0:
+            return bf[0]
         return None, None
     
     def ready_priority_first(self, now=None):
         if now is None:
             now = time.time()
+        bf = []
         for lvl in range(self.levels):
             priority = self.__estimated_delays__(lvl, now, -np.inf, self.batchsize, self.ready_param['alpha'])
             ind = priority.argmax()
             if not np.isinf(priority[ind]):
                 return lvl, self.rsl_list[ind]
+            # no queue contains a full batch
+            priority = self.__estimated_delays__(lvl, now, -np.inf, 1, self.ready_param['alpha'])
+            ind = priority.argmax()
+            if not np.isinf(priority[ind]):
+                bf.append((lvl, self.rsl_list[ind]))
+        if len(bf) != 0:
+            return bf[0]
         return None, None
     
     def ready_awt(self, now=None):
         if now is None:
             now = time.time()
+        bf = []
         for lvl in range(self.levels):
             priority = self.__waiting_time_queue__(lvl, now, -np.inf, self.batchsize)
             ind = priority.argmax()
             if not np.isinf(priority[ind]):
                 return lvl, self.rsl_list[ind]
+            # no queue contains a full batch
+            priority = self.__waiting_time_queue__(lvl, now, -np.inf, 1)
+            ind = priority.argmax()
+            if not np.isinf(priority[ind]):
+                bf.append((lvl, self.rsl_list[ind]))
+        if len(bf) != 0:
+            return bf[0]
         return None, None
 
     # data get functions
