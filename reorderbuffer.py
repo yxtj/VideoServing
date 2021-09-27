@@ -13,6 +13,13 @@ class ReorderBuffer:
         self.buffer_idx.add(idx)
         if idx == self.plast:
             self.__move_last__()
+
+    def top(self):
+        if self.pfirst < self.plast:
+            idx = self.pfirst
+            data = self.buffer_data[idx]
+            return idx, data
+        return None, None
         
     def get_one(self):
         if self.pfirst < self.plast:
