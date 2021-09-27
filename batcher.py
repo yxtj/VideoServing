@@ -182,9 +182,12 @@ def optimal_process(tasks, rsl_list, batchsize, mat_pt):
 def simulate_process(tasks, ntask_each, fh, nlength, speed_factor):
     nsource = len(ntask_each)
     ptime = 0.0
+    rbs = [ ReorderBuffer() for _ in range(nsource) ]
+    
     loads = np.zeros(nlength)
     details = []
-    delays = [np.zeros((ntask_each[i], 2)) for i in range(nsource)]
+    # waiting delay, processing delay, commiting delay
+    delays = [np.zeros((ntask_each[i], 3)) for i in range(nsource)]
     for tsk in tasks:
         # tsk is the next task
         #(t, frame, jid, sid, fid, rs, fr) = tsk
@@ -200,8 +203,15 @@ def simulate_process(tasks, ntask_each, fh, nlength, speed_factor):
             eta = load/speed_factor
             #print(ptime, rdy_lvl, rdy_rs, load)
             for ifo in info:
-                delays[ifo.sid][ifo.fid] = (ptime - ifo.time, eta)
+                rbs[ifo.sid].put(ifo.fid, ptime)
+                # per-task latency
+                delays[ifo.sid][ifo.fid][:2] = (ptime - ifo.time, eta)
                 #print(ifo.tid, ifo.sid, ifo.fid, ifo.time)
+            for sid,rb in enumerate(rbs):
+                fids, ts = rb.get()
+                for fid, t in zip(fids, ts):
+                    # stream-level latency
+                    delays[sid][fid][2] = ptime - t
             ptime = ptime + eta
         fh.put(tsk.frame, 0, tsk.jid, tsk.sid, tsk.fid, tsk.rs, tsk.time)
         ptime = max(ptime, now)
@@ -214,7 +224,7 @@ def simulate_process(tasks, ntask_each, fh, nlength, speed_factor):
             rest_load += load
             batch,_ = fh.get_batch(0, rs)
     avg_delay = np.array([ d.mean(0) for d in delays ])
-    print('ft=%.3f rest=%.3f rest_t=%.3f avg_load=%.3f avg_delay=[%.4f %.4f]' %
+    print('ft=%.3f rest=%.3f rest_t=%.3f avg_load=%.3f avg_delay=[%.4f, %.4f %.4f]' %
           (ptime, rest_load, rest_load/speed_factor, loads.mean(), *avg_delay.mean(0)))
     return loads, rest_load, delays, details
 
@@ -321,14 +331,14 @@ def simulate_process_with_cr(tasks, ntask_each, csegs, rsegs, fh,
                 del commit_buffer[:i]
                 break
             if jid >= 0: # live job
-                rbs_l[sid].put(b, fid)
+                rbs_l[sid].put(fid, b)
             elif jid == JID_CTF:
-                rbs_c[sid].put(b, fid)
+                rbs_c[sid].put(fid, b)
         # check and insert c-r jobs
         for s in csegs[pointer_c:]:
             if s.cond_tm > now:
                 break
-            if rbs_l[s.sid].get_check(s.cond_nf):
+            if rbs_l[s.sid].move_and_check(s.cond_nf):
                 pointer_c += 1
                 ctasks = s.make_tasks(JID_CTF, cmt_nf_c[s.sid], now)
                 #print('c-job:',s.sid,s.t_start,s.t_end)
@@ -338,7 +348,7 @@ def simulate_process_with_cr(tasks, ntask_each, csegs, rsegs, fh,
         for s in rsegs[pointer_r:]:
             if s.cond_tm > now:
                 break
-            if rbs_c[s.sid].get_check(s.cond_nf):
+            if rbs_c[s.sid].move_and_check(s.cond_nf):
                 pointer_r += 1
                 ctasks = s.make_tasks(JID_RFN, cmt_nf_r[s.sid], now)
                 #print('r-job:',s.sid,s.t_start,s.t_end)
@@ -390,18 +400,23 @@ def analyze_delay_overtime(delays, workload, rsl_list):
     dot_each = delay_ot/ntask_ot
     return dot_each, dot_avg
 
-# %% plotting script
 
-def show_queue_length(details, rsl_list, nlength, ql_max=None, nbin=8, log=False):
+def analyze_queue_length(details, rsl_list, nlength):
     queuelength = np.zeros((len(rsl_list), nlength))
     num_process = np.zeros(nlength)
     for t, lvl, rs, bs, load, ql in details:
         ind_t = int(t)
-        queuelength[:,ind_t] += ql[0] # live queue only
+        queuelength[:,ind_t] += ql[0] # live queue
+        #queuelength[:,ind_t] += ql[1] # certify queue
         num_process[ind_t] += 1
     queuelength /= num_process # average queue length of each time slot
-    print((queuelength<bs).mean(1))
-    
+    return queuelength
+
+
+# %% plotting script
+
+def show_queue_length(details, rsl_list, nlength, ql_max=None, nbin=8, log=False):
+    queuelength = analyze_queue_length(details, rsl_list, nlength)
     if ql_max is None:
         ql_max = queuelength.max()
     
@@ -458,12 +473,12 @@ def show_delay_distribution_cmp(delays_list, legends=None, select_idx=None,
     plt.ylabel('CDF')
     plt.tight_layout()
 
-def show_delay_overtime(delays, workload, rsl_list, individual=False, newfig=True):
+def show_delay_overtime(delays, workload, rsl_list, each_rsl=False, newfig=True):
     dot_each, dot_avg = analyze_delay_overtime(delays, workload, rsl_list)
     if newfig:
         plt.figure()
     #plt.plot(ad.sum(0))
-    if individual:
+    if each_rsl:
         plt.plot(util.moving_average(dot_each, 10).T)
         plt.legend(rsl_list)
     else:
@@ -605,13 +620,7 @@ def __test__():
     plt.tight_layout()
     
     # analyze queue length
-    queuelength = np.zeros((len(rsl_list), nlength))
-    num_process = np.zeros(nlength)
-    for t, lvl, rs, bs, load, ql in details:
-        ind_t = int(t)
-        queuelength[:,ind_t] += ql[0] # live queue only
-        num_process[ind_t] += 1
-    queuelength /= num_process # average queue length of each time slot
+    queuelength = analyze_queue_length(details, rsl_list, nlength)
     print((queuelength<bs).mean(1))
     
     ql_max = queuelength.max()
