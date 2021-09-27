@@ -6,9 +6,9 @@ class ReorderBuffer:
         self.buffer_data = {}
         self.buffer_idx = set()
         self.pfirst = init_v # the next ID to pick
-        self.plast = init_v # one over the last inordered ID
+        self.plast = init_v # one over the last ordered ID
     
-    def put(self, data, idx):
+    def put(self, idx, data):
         self.buffer_data[idx] = data
         self.buffer_idx.add(idx)
         if idx == self.plast:
@@ -36,7 +36,7 @@ class ReorderBuffer:
             n -= 1
         return res_i, res_d
     
-    def get_check(self, target_idx, n:int=0):
+    def move_and_check(self, target_idx, n:int=0):
         if n == 0:
             n = self.plast - self.pfirst
         while self.pfirst < self.plast and n > 0:
