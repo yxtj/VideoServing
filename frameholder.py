@@ -84,7 +84,7 @@ class FrameHolder():
         # assert m in ['come', 'small', 'finish', 'delay', 'priority', 'awt']
         self.set_ready_method(policy, **kwargs)
         self.tid_lock = Lock()
-        self.tid = 0
+        self.tid = 0 # internal task id
         
     
     def clear(self):
