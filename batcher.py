@@ -186,7 +186,7 @@ def simulate_process(tasks, ntask_each, fh, nlength, speed_factor):
     
     loads = np.zeros(nlength)
     details = []
-    # waiting delay, processing delay, commiting delay
+    # delays: waiting delay, processing delay, commiting delay
     delays = [np.zeros((ntask_each[i], 3)) for i in range(nsource)]
     for tsk in tasks:
         # tsk is the next task
@@ -203,16 +203,16 @@ def simulate_process(tasks, ntask_each, fh, nlength, speed_factor):
             eta = load/speed_factor
             #print(ptime, rdy_lvl, rdy_rs, load)
             for ifo in info:
-                rbs[ifo.sid].put(ifo.fid, ptime)
-                # per-task latency
+                rbs[ifo.sid].put(ifo.fid, ptime + eta)
+                # waiting delay and processing delay
                 delays[ifo.sid][ifo.fid][:2] = (ptime - ifo.time, eta)
                 #print(ifo.tid, ifo.sid, ifo.fid, ifo.time)
+            ptime = ptime + eta
             for sid,rb in enumerate(rbs):
                 fids, ts = rb.get()
                 for fid, t in zip(fids, ts):
-                    # stream-level latency
+                    # commit delay
                     delays[sid][fid][2] = ptime - t
-            ptime = ptime + eta
         fh.put(tsk.frame, 0, tsk.jid, tsk.sid, tsk.fid, tsk.rs, tsk.time)
         ptime = max(ptime, now)
     rest_load = 0.0
@@ -296,7 +296,7 @@ def simulate_process_with_cr(tasks, ntask_each, csegs, rsegs, fh,
     ptime = 0.0
     loads = np.zeros(nlength)
     details = []
-    delays = [np.zeros((ntask_each[i], 2)) for i in range(nsource)]
+    delays = [np.zeros((ntask_each[i], 3)) for i in range(nsource)]
     
     commit_buffer = []
     
@@ -314,11 +314,11 @@ def simulate_process_with_cr(tasks, ntask_each, csegs, rsegs, fh,
             #print('%.3f'%ptime, rdy_lvl, rdy_rs, len(batch))
             loads[int(ptime)] += load
             eta = load/speed_factor
-            if rdy_lvl == 0:
+            if rdy_lvl == 0: # live
                 for b,ifo in zip(batch,info):
-                    delays[ifo.sid][ifo.fid] = (ptime - ifo.time, eta)
+                    delays[ifo.sid][ifo.fid][:2] = (ptime - ifo.time, eta)
                     commit_buffer.append((ptime+eta, b, ifo.jid, ifo.sid, ifo.fid))
-            else:
+            else: # ceritfy & refine
                 for b,ifo in zip(batch,info):
                     commit_buffer.append((ptime+eta, b, ifo.jid, ifo.sid, ifo.fid))
             flag_new_commit = True
