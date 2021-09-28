@@ -208,7 +208,7 @@ def simulate_process(tasks, ntask_each, fh, nlength, speed_factor):
                 delays[ifo.sid][ifo.fid][:2] = (ptime - ifo.time, eta)
                 #print(ifo.tid, ifo.sid, ifo.fid, ifo.time)
             ptime = ptime + eta
-            for sid,rb in enumerate(rbs):
+            for sid, rb in enumerate(rbs):
                 fids, ts = rb.get()
                 for fid, t in zip(fids, ts):
                     # commit delay
@@ -285,6 +285,7 @@ def simulate_process_with_cr(tasks, ntask_each, csegs, rsegs, fh,
     # reuse jid to identify job type during simulation
     JID_CTF = -1
     JID_RFN = -2
+    rbs = [ ReorderBuffer() for _ in range(nsource) ] # for committing delay
     rbs_l = [ ReorderBuffer() for _ in range(nsource) ]
     rbs_c = [ ReorderBuffer() for _ in range(nsource) ]
     
@@ -318,11 +319,17 @@ def simulate_process_with_cr(tasks, ntask_each, csegs, rsegs, fh,
                 for b,ifo in zip(batch,info):
                     delays[ifo.sid][ifo.fid][:2] = (ptime - ifo.time, eta)
                     commit_buffer.append((ptime+eta, b, ifo.jid, ifo.sid, ifo.fid))
+                    rbs[ifo.sid].put(ifo.fid, ptime + eta)
             else: # ceritfy & refine
                 for b,ifo in zip(batch,info):
                     commit_buffer.append((ptime+eta, b, ifo.jid, ifo.sid, ifo.fid))
             flag_new_commit = True
             ptime += eta
+            # commit delay
+            for sid, rb in enumerate(rbs):
+                fids, ts = rb.get()
+                for fid, t in zip(fids, ts):
+                    delays[sid][fid][2] = ptime - t
         # commit finished tasks (before <now>)
         if flag_new_commit:
             commit_buffer.sort(key=lambda t:t[0])
@@ -331,9 +338,9 @@ def simulate_process_with_cr(tasks, ntask_each, csegs, rsegs, fh,
                 del commit_buffer[:i]
                 break
             if jid >= 0: # live job
-                rbs_l[sid].put(fid, b)
+                rbs_l[sid].put(fid, ct)
             elif jid == JID_CTF:
-                rbs_c[sid].put(fid, b)
+                rbs_c[sid].put(fid, None)
         # check and insert c-r jobs
         for s in csegs[pointer_c:]:
             if s.cond_tm > now:
