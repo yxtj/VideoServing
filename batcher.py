@@ -224,8 +224,8 @@ def simulate_process(tasks, ntask_each, fh, nlength, speed_factor):
             rest_load += load
             batch,_ = fh.get_batch(0, rs)
     avg_delay = np.array([ d.mean(0) for d in delays ])
-    print('ft=%.3f rest=%.3f rest_t=%.3f avg_load=%.3f avg_delay=[%.4f, %.4f %.4f]' %
-          (ptime, rest_load, rest_load/speed_factor, loads.mean(), *avg_delay.mean(0)))
+    print('ft=%.3f rest=%.3f rest_t=%.3f avg_load=%.3f avg_delay=%.4f [%.4f, %.4f %.4f]' %
+          (ptime, rest_load, rest_load/speed_factor, loads.mean(), avg_delay.mean(0).sum(), *avg_delay.mean(0)))
     return loads, rest_load, delays, details
 
 # %% helper functions for live+certify+reine experiment
@@ -378,8 +378,8 @@ def simulate_process_with_cr(tasks, ntask_each, csegs, rsegs, fh,
     
     #delays = np.array(delays)
     avg_delay = np.array([ d.mean(0) for d in delays ])
-    print('ft=%.3f rest=(%.3f,%.3f) rest_t=%.3f avg_load=%.3f avg_delay=[%.4f %.4f]' %
-          (ptime, *rest_load, rest_load.sum()/speed_factor, loads.mean(), *avg_delay.mean(0)))
+    print('ft=%.3f rest=(%.3f,%.3f) rest_t=%.3f avg_load=%.3f avg_delay=%4.f [%.4f %.4f %.4f]' %
+          (ptime, *rest_load, rest_load.sum()/speed_factor, loads.mean(), avg_delay.mean(0).sum(), *avg_delay.mean(0)))
     return loads, rest_load, delays, details
 
 
@@ -594,8 +594,8 @@ def __test__():
     
     loads, rest_load, delays, details = simulate_process(tasks, nfbefore[:,-1], fh, nlength, speed_factor)
     
-    methods = ['come', 'small', 'finish', 'delay', 'priority', 'awt']
-    legends = ['FCFS', 'SJFS', 'MLFS', 'LFFS', 'Priority', 'LWFS']
+    methods = ['fcfs', 'sjfs', 'min-delay', 'max-delay', 'bpt', 'bwt']
+    legends = ['FCFS', 'SJFS', 'SLFS', 'LLFS', 'BPTS', 'BWTS']
     bss = [1,2,4,8]
     
     loads8 = np.zeros((len(methods), nlength))
@@ -605,7 +605,7 @@ def __test__():
     #for i, bs in enumerate(bss):
     #    fh=FrameHolder(rsl_list, bs, 1, mat_pt, 'finish')
     for i, m in enumerate(methods):
-        fh=FrameHolder(rsl_list, bs, 1, mat_pt, m, param_alpha=2.0)
+        fh=FrameHolder(rsl_list, bs, 1, mat_pt, m, param_alpha=1.5)
         #details: (ptime, rdy_rs, len(batch), load, fh.query_queue_length_as_list())
         loads, rest_load, delays, details = simulate_process(tasks, nfbefore[:,-1], fh, nlength, speed_factor)
         loads8[i]=loads
@@ -689,7 +689,7 @@ def __test_lcr__():
     speed_factor = 11.5
     capacity = 1 * speed_factor
     
-    fh=FrameHolder(rsl_list, bs, 2, mat_pt, 'finish')
+    fh=FrameHolder(rsl_list, bs, 2, mat_pt, 'bpt')
     loads_l, rload_l, delays_l, detail_l = simulate_process(tasks, nfbefore[:,-1], fh, nlength, speed_factor)
     fh.clear()
     loads_t, rload_t, delays_t, detail_t = simulate_process_with_cr(tasks, nfbefore[:,-1], csegs, rsegs, fh, nsource, nlength, speed_factor)
