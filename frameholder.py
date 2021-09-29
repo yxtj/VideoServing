@@ -125,6 +125,31 @@ class FrameHolder():
         ind = self.rsl_index[rs]
         return self.process_time[ind][min(n, self.max_pbs)-1]*n
     
+    def set_ready_method(self, m, **kwargs):
+        m = m.lower()
+        assert m in ['fcfs', 'sjfs', 'min-delay', 'max-delay',
+                     'bpt', 'bwt', 'awt']
+        self.policy = m
+        if m == 'fcfs':
+            self.ready = lambda now: self.ready_come_first()
+        elif m == 'sjfs':
+            self.ready = lambda now: self.ready_small_first()
+        elif m == 'min-delay':
+            self.ready = self.ready_min_delay_first
+        elif m == 'max-delay':
+            self.ready = self.ready_max_delay_first
+        elif m == 'bpt':
+            self.ready_param = {'alpha':float(kwargs['param_alpha'])}
+            # process_time + alpha/(wait_time+1) -> min
+            self.ready = self.ready_balanced_process
+        elif m == 'bwt':
+            self.ready_param = {'alpha':float(kwargs['param_alpha'])}
+            # wait_time + alpha/process_time -> max
+            self.ready = self.ready_balanced_wait
+        elif m == 'awt':
+            # average waiting time
+            self.ready = self.ready_awt
+    
     # info query functions
     
     def query_queue_length(self, level=None, rs=None):
@@ -171,38 +196,23 @@ class FrameHolder():
                 l[i][j] = self.queues[i][j].wait_time(now)
         return l
     
-    # find ready queue        
-    
-    def set_ready_method(self, m, **kwargs):
-        assert m in ['come', 'small', 'finish', 'delay', 'priority', 'awt']
-        self.policy = m
-        if m == 'come':
-            self.ready = lambda now: self.ready_come_first()
-        elif m == 'small':
-            self.ready = lambda now: self.ready_small_first()
-        elif m == 'finish':
-            self.ready = self.ready_finish_first
-        elif m == 'delay':
-            self.ready = self.ready_max_delay_first
-        elif m == 'priority':
-            self.ready_param = {'alpha':float(kwargs['param_alpha'])}
-            # priority = alpha*wait_time + process_time
-            self.ready = self.ready_priority_first
-        elif m == 'awt':
-            self.ready = self.ready_awt
+    # find ready queue
         
     def ready_come_first(self):
+        def pick_by_inqueue_time(queues, ql_min):
+            t = [q.info[0].time if q.size()>=ql_min else np.inf for q in queues]
+            ind = np.argmin(t)
+            if not np.isinf(t[ind]):
+                return ind
+            return None
         bf = []
         for lvl in range(self.levels):
-            t = [q.info[0].time if q.size()>=self.batchsize else np.inf
-                 for q in self.queues[lvl]]
-            ind = np.argmin(t)
-            if not np.isinf(t[ind]):
+            ind = pick_by_inqueue_time(self.queues[lvl], self.batchsize)
+            if ind is not None:
                 return lvl, self.rsl_list[ind]
             # no queue contains a full batch
-            t = [q.info[0].time if q.size()>0 else np.inf for q in self.queues[lvl]]
-            ind = np.argmin(t)
-            if not np.isinf(t[ind]):
+            ind = pick_by_inqueue_time(self.queues[lvl], 1)
+            if ind is not None:
                 bf.append((lvl, self.rsl_list[ind]))
         if len(bf) != 0:
             return bf[0]
@@ -222,55 +232,75 @@ class FrameHolder():
             return bf[0]
         return None, None
    
-    def ready_finish_first(self, now=None):
+    def ready_min_delay_first(self, now=None):
+        def fun(n, wt, pt):
+            return wt+pt
         if now is None:
             now = time.time()
         bf = []
         for lvl in range(self.levels):
-            etds = self.__estimated_delays__(lvl, now, np.inf, self.batchsize)
-            ind = etds.argmin()
-            if not np.isinf(etds[ind]):
+            ind = self.pick_with_score(lvl, now, fun, self.batchsize, False)
+            if ind is not None:
                 return lvl, self.rsl_list[ind]
             # no queue contains a full batch
-            etds = self.__estimated_delays__(lvl, now, np.inf, 1)
-            ind = etds.argmin()
-            if not np.isinf(etds[ind]):
+            ind = self.pick_with_score(lvl, now, fun, 1, False)
+            if ind is not None:
                 bf.append((lvl, self.rsl_list[ind]))
         if len(bf) != 0:
             return bf[0]
         return None, None
 
     def ready_max_delay_first(self, now=None):
+        def fun(n, wt, pt):
+            return wt+pt
         if now is None:
             now = time.time()
         bf = []
         for lvl in range(self.levels):
-            etds = self.__estimated_delays__(lvl, now, -np.inf, self.batchsize)
-            ind = etds.argmax()
-            if not np.isinf(etds[ind]): 
+            ind = self.pick_with_score(lvl, now, fun, self.batchsize, True)
+            if ind is not None:
                 return lvl, self.rsl_list[ind]
             # no queue contains a full batch
-            etds = self.__estimated_delays__(lvl, now, -np.inf, 1)
-            ind = etds.argmax()
-            if not np.isinf(etds[ind]): 
+            ind = self.pick_with_score(lvl, now, fun, 1, True)
+            if ind is not None:
                 bf.append((lvl, self.rsl_list[ind]))
         if len(bf) != 0:
             return bf[0]
         return None, None
     
-    def ready_priority_first(self, now=None):
+    def ready_balanced_process(self, now=None):
+        alpha = self.ready_param['alpha']
+        def fun(n, wt, pt):
+            return alpha/(wt+1) + pt
         if now is None:
             now = time.time()
         bf = []
         for lvl in range(self.levels):
-            priority = self.__estimated_delays__(lvl, now, -np.inf, self.batchsize, self.ready_param['alpha'])
-            ind = priority.argmax()
-            if not np.isinf(priority[ind]):
+            ind = self.pick_with_score(lvl, now, fun, self.batchsize, False)
+            if ind is not None:
                 return lvl, self.rsl_list[ind]
             # no queue contains a full batch
-            priority = self.__estimated_delays__(lvl, now, -np.inf, 1, self.ready_param['alpha'])
-            ind = priority.argmax()
-            if not np.isinf(priority[ind]):
+            ind = self.pick_with_score(lvl, now, fun, 1, False)
+            if ind is not None:
+                bf.append((lvl, self.rsl_list[ind]))
+        if len(bf) != 0:
+            return bf[0]
+        return None, None
+    
+    def ready_balanced_wait(self, now=None):
+        alpha = self.ready_param['alpha']
+        def fun(n, wt, pt):
+            return wt + alpha/pt
+        if now is None:
+            now = time.time()
+        bf = []
+        for lvl in range(self.levels):
+            ind = self.pick_with_score(lvl, now, fun, self.batchsize, True)
+            if ind is not None:
+                return lvl, self.rsl_list[ind]
+            # no queue contains a full batch
+            ind = self.pick_with_score(lvl, now, fun, 1, True)
+            if ind is not None:
                 bf.append((lvl, self.rsl_list[ind]))
         if len(bf) != 0:
             return bf[0]
@@ -304,6 +334,33 @@ class FrameHolder():
         ind = self.rsl_index[rs]
         return self.queues[level][ind].get_all()
     
+    # -- helper functions --
+    
+    def pick_with_score(self, level, now, fun, ql_min, pick_max=True):
+        indices, scores = self.__queue_summary__(level, now, fun, ql_min)
+        if len(indices) == 0:
+            return None
+        if pick_max:
+            ind = np.argmax(scores)
+        else:
+            ind = np.argmin(scores)
+        return indices[ind]
+    
+    def estimate_delay(self, level, rs, now):
+        ind = self.rsl_index(rs)
+        q = self.queues[level][ind]
+        n = q.size()
+        if n >= 1:
+            etd = q.wait_time(now)
+            etd += self.process_time[ind][min(n, self.batchsize)-1]*n
+        else:
+            etd = 0.0
+        return etd
+    
+    def summary_delay(self, level, now, ql_min=1):
+        fun = lambda n, wt, pt: wt+pt
+        return self.__queue_summary__(level, now, fun, ql_min)
+   
     # -- inner functions --
     
     def __waiting_time_queue__(self, level, now, pad=np.nan, ql_min=1):
@@ -315,27 +372,43 @@ class FrameHolder():
                 wt[i] = q.wait_time(now)
         return wt
     
-    def __estimated_delay_one__(self, level, rs, now):
-        ind = self.rsl_index(rs)
-        q = self.queues[level][ind]
-        n = q.size()
-        if n > 0:
-            etd = q.wait_time(now)
-            etd += self.process_time[ind][min(n, self.batchsize)-1]*n
-        else:
-            etd = 0.0
-        return etd
-    
-    def __estimated_delays__(self, level, now, pad=np.nan, ql_min=-1, alpha=1.0):
-        etds = np.zeros(self.nrsl) + pad
+    def __process_time_queue__(self, level, now, pad=np.nan, ql_min=1):
+        pt = np.zeros(self.nrsl) + pad
         qs = self.queues[level]
         for i, q in enumerate(qs):
             n = q.size()
             if n >= ql_min:
-                etd = q.wait_time(now)*alpha
-                etd += self.process_time[i][min(n, self.batchsize-1)]*n
-                etds[i] = etd
-        return etds
+                pt[i] = self.process_time[i][min(n, self.batchsize-1)]*n
+        return pt
+    
+    def __queue_summary__(self, level, now, fun, ql_min=1):
+        '''
+        fun: a function of (nframes, wait_time, process_time), returns a score
+        '''
+        indices = []
+        values = []
+        qs = self.queues[level]
+        for i, q in enumerate(qs):
+            n = q.size()
+            if n >= ql_min:
+                wait_time = q.wait_time(now)
+                process_time = self.process_time[i][min(n, self.batchsize-1)]*n
+                v = fun(n, wait_time, process_time)
+                indices.append(i)
+                values.append(v)
+        return indices, values
+    
+    def __queue_summary_general__(self, level, now, fun):
+        values = []
+        qs = self.queues[level]
+        for i, q in enumerate(qs):
+            n = q.size()
+            wait_time = q.wait_time(now)
+            process_time = self.process_time[i][min(n, self.batchsize-1)]*n
+            v = fun(n, wait_time, process_time)
+            values.append(v)
+        return values
+
 
 # %% test
 
