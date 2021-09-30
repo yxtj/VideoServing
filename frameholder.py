@@ -5,7 +5,7 @@ import time
 from collections import namedtuple
 from threading import Lock
 
-Configure = namedtuple('Configure', ['rs', 'fr', 'roi', 'model'])
+#Configure = namedtuple('Configure', ['rs', 'fr', 'roi', 'model'])
 FrameInfo = namedtuple('FrameInfo', ['tid', 'jid', 'sid', 'fid', 'time'])
 
 class FrameQueue():
@@ -128,7 +128,7 @@ class FrameHolder():
     def set_ready_method(self, m, **kwargs):
         m = m.lower()
         assert m in ['fcfs', 'sjfs', 'min-delay', 'max-delay',
-                     'bpt', 'bwt', 'awt']
+                     'bpt', 'bwt', 'awt', 'ratio-wp', 'ratio-pw']
         self.policy = m
         if m == 'fcfs':
             self.ready = lambda now: self.ready_come_first()
@@ -146,6 +146,10 @@ class FrameHolder():
             self.ready_param = {'alpha':float(kwargs['param_alpha'])}
             # wait_time + alpha/process_time -> max
             self.ready = self.ready_balanced_wait
+        elif m == 'ratio-wp':
+            self.ready = self.ready_ratio_wp
+        elif m == 'ratio-pw':
+            self.ready = self.ready_ratio_pw
         elif m == 'awt':
             # average waiting time
             self.ready = self.ready_awt
@@ -291,6 +295,42 @@ class FrameHolder():
         alpha = self.ready_param['alpha']
         def fun(n, wt, pt):
             return wt + alpha/pt
+        if now is None:
+            now = time.time()
+        bf = []
+        for lvl in range(self.levels):
+            ind = self.pick_with_score(lvl, now, fun, self.batchsize, True)
+            if ind is not None:
+                return lvl, self.rsl_list[ind]
+            # no queue contains a full batch
+            ind = self.pick_with_score(lvl, now, fun, 1, True)
+            if ind is not None:
+                bf.append((lvl, self.rsl_list[ind]))
+        if len(bf) != 0:
+            return bf[0]
+        return None, None
+    
+    def ready_ratio_pw(self, now=None):
+        def fun(n, wt, pt):
+            return pt/(1+wt)
+        if now is None:
+            now = time.time()
+        bf = []
+        for lvl in range(self.levels):
+            ind = self.pick_with_score(lvl, now, fun, self.batchsize, False)
+            if ind is not None:
+                return lvl, self.rsl_list[ind]
+            # no queue contains a full batch
+            ind = self.pick_with_score(lvl, now, fun, 1, False)
+            if ind is not None:
+                bf.append((lvl, self.rsl_list[ind]))
+        if len(bf) != 0:
+            return bf[0]
+        return None, None
+    
+    def ready_ratio_wp(self, now=None):
+        def fun(n, wt, pt):
+            return wt/pt
         if now is None:
             now = time.time()
         bf = []
