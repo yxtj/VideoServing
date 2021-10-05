@@ -154,7 +154,7 @@ def __test__():
     plt.plot((ap_t+ap_pt)*WLF) # profile-period
     plt.plot(util.moving_average(pt,10)*WLF) # predict
     plt.xlabel('time (s)')
-    plt.ylabel('resource (GFLOPS)')
+    plt.ylabel('resource (GFLOP)')
     #plt.ylabel('resource (s)')
     plt.legend(['no-adapt', 'prf-once','prf-period','prf-free'],ncol=2,fontsize=12,columnspacing=0.5)
     plt.ylim((-10,380))
@@ -166,7 +166,7 @@ def __test__():
     plt.plot((util.moving_average(ap_t,5)+ap_pt)*WLF) # profile-period
     plt.plot(util.moving_average(pt,10)*WLF) # predict
     plt.xlabel('time (s)')
-    plt.ylabel('resource (GFLOPS)')
+    plt.ylabel('resource (GFLOP)')
     #plt.ylabel('resource (s)')
     plt.legend(['prf-once','prf-period','prf-free'])
     #plt.ylim((0,10))
@@ -202,7 +202,7 @@ def __test__():
     plt.subplot2grid((2,1),(0,0))
     plt.plot(pt*WLF)
     plt.ylim((0,None))
-    plt.ylabel('rsc (GFLOPS)')
+    plt.ylabel('rsc (GFLOP)')
     plt.subplot2grid((2,1),(1,0))
     plt.plot(util.moving_average(pa,10))
     plt.ylim((-0.05,1.05))
