@@ -2,6 +2,7 @@
 
 import numpy as np
 import time
+import itertools
 from collections import namedtuple
 from dataclasses import dataclass
 
@@ -115,7 +116,7 @@ def simulate_workloads(nsource, nlength, distr_rsl, cdistr_rsl_fps, fps_list):
             res[i,p,1] = cnts
             smy[p, j] += cnts
     return res, smy
-   
+
 def workload_to_tasks(workload, rsl_list, max_fps=30):
     # result: (time, frame, jid, sid, fid, rs, fr)
     assert workload.ndim == 3
@@ -145,6 +146,90 @@ def workload_to_tasks(workload, rsl_list, max_fps=30):
             fids[sid] += 1
     nfbefore = np.cumsum(nfbefore, 1)
     return tasks, nfbefore
+
+
+def workload_to_periodic_profiling_tasks(workload, period, rsl_list, max_fps=30):
+    assert workload.ndim == 3
+    assert workload.shape[2] == 2
+    nsource, nlength = workload.shape[:2]
+    nrsl = len(rsl_list)
+    tasks = []
+    nfbefore = np.zeros((nsource, nlength), int)
+    fids = [0 for _ in range(nsource)]
+    
+    idxes = util.sample_index(nlength, period, 1, 'head').ravel()
+    if idxes[-1] != nlength:
+        idxes = np.pad(idxes, (0,1), constant_values=nlength)
+    for idx_f, idx_l in zip(idxes[:-1], idxes[1:]):
+        sample = workload[:,idx_f,:]
+        tsks = []
+        for j in range(nsource):
+            # profiling tasks
+            nf = max_fps
+            fr = 1
+            for k in range(nrsl):
+                tsks.extend([ (idx_f + 1.0/nf*ind, j, fr, k) for ind in range(nf)])
+            nfbefore[j,idx_f] += nrsl*nf
+            # live tasks
+            ind_rs, nf = sample[j]
+            for k in range(idx_f, idx_l):
+                tsks.extend([ (k+1.0/nf*ind, j, fr, ind_rs) for ind in range(nf) ])
+                nfbefore[j,k] += nf
+        tsks.sort(key=lambda v:v[0])
+        for t, sid, fr, ind_rs in tsks:
+            rs = rsl_list[ind_rs]
+            #res.append((t, np.zeros((int(rs/9*16),rs)), 0, sid, fids[sid], rs, fr))
+            tasks.append(Task(t, None, 0, sid, fids[sid], rs, fr))
+            fids[sid] += 1
+    nfbefore = np.cumsum(nfbefore, 1)
+    return tasks, nfbefore
+
+
+# %% workload summary
+
+def summary_workload(workload, rsl_list):
+    assert workload.ndim == 3
+    assert workload.shape[2] == 2
+    nsource, nlength = workload.shape[:2]
+    nrsl = len(rsl_list)
+    smy = np.zeros((nlength, nrsl), int)
+    for i in range(nsource):
+        for j in range(nlength):
+            ind_rs, nf = workload[i,j]
+            smy[j, ind_rs] += nf
+    return smy
+
+
+def summary_tasks(tasks, nsource, nlength, rsl_list, fps_list):
+    nrsl = len(rsl_list)
+    rsl_index = { rs:i for i,rs in enumerate(rsl_list) }
+    smy = np.zeros((nlength, nrsl), int)
+    smy_detail = np.zeros((nsource, nlength, nrsl), int)
+    for t, f, jid, sid, fid, rs, fr in tasks:
+        tid = int(t)
+        rid = rsl_index[rs]
+        smy[tid, rid] += 1
+        smy_detail[sid, tid, rid] += 1
+    return smy, smy_detail
+
+def summary_to_time(smy, rsl_time_list):
+    assert smy.ndim == 2 or smy.ndim == 3
+    assert len(rsl_time_list) == smy.shape[-1]
+    times = np.zeros_like(smy, dtype=float)
+    if smy.ndim == 2:
+        nlength, nrsl = smy.shape
+        for i in range(nlength):
+            for j in range(nrsl):
+                times[i,j] = smy[i,j]*rsl_time_list[j]
+    else:
+        nsource, nlength, nrsl = smy.shape
+        for k in range(nsource):
+            for i in range(nlength):
+                for j in range(nrsl):
+                    times[k,i,j] = smy[k,i,j]*rsl_time_list[j]
+    return times
+
+# %% helper functions for normal process (live tasks only)
 
 def optimal_process(tasks, rsl_list, batchsize, mat_pt):
     nrsl = len(rsl_list)
@@ -280,8 +365,8 @@ def generate_cr_segment(nsource, nlength, period, slength, interleave,
     return csegs, rsegs
 
 def simulate_process_with_cr(tasks, ntask_each, csegs, rsegs, fh,
-                             nsource, nlength, speed_factor):
-    assert len(ntask_each) == nsource
+                             nlength, speed_factor):
+    nsource = len(ntask_each)
     # reuse jid to identify job type during simulation
     JID_CTF = -1
     JID_RFN = -2
@@ -378,7 +463,7 @@ def simulate_process_with_cr(tasks, ntask_each, csegs, rsegs, fh,
     
     #delays = np.array(delays)
     avg_delay = np.array([ d.mean(0) for d in delays ])
-    print('ft=%.3f rest=(%.3f,%.3f) rest_t=%.3f avg_load=%.3f avg_delay=%4.f [%.4f %.4f %.4f]' %
+    print('ft=%.3f rest=(%.3f,%.3f) rest_t=%.3f avg_load=%.3f avg_delay=%.4f [%.4f %.4f %.4f]' %
           (ptime, *rest_load, rest_load.sum()/speed_factor, loads.mean(), avg_delay.mean(0).sum(), *avg_delay.mean(0)))
     return loads, rest_load, delays, details
 
@@ -464,6 +549,8 @@ def show_delay_distribution(delays, nbin=100, cdf=True, bar=False, newfig=True):
 
 def show_delay_distribution_cmp(delays_list, legends=None, select_idx=None,
                                 nbin=100, newfig=True):
+    lines = ["-","--","-.",":"]
+    linecycler = itertools.cycle(lines)
     dly_max = max([d.sum(1).max() for dg in delays_list for d in dg])
     if select_idx is None:
         select_idx = list(range(len(delays_list)))
@@ -473,11 +560,35 @@ def show_delay_distribution_cmp(delays_list, legends=None, select_idx=None,
         d = np.concatenate([d.sum(1) for d in delays_list[i]])
         hh,xh=np.histogram(d, nbin, (0, dly_max))
         h = hh / hh.sum()
-        plt.plot(xh, np.pad(np.cumsum(h), (1,0)))
+        plt.plot(xh, np.pad(np.cumsum(h), (1,0)), next(linecycler))
     if legends:
         plt.legend([legends[i] for i in select_idx])
     plt.xlabel('delay (s)')
     plt.ylabel('CDF')
+    plt.tight_layout()
+
+def show_delay_composition_cmp(delays_list, xticks=None, select_idx=None,
+                               width=0.7, std=False, loc=None, newfig=True):
+    if select_idx is None:
+        select_idx = list(range(len(delays_list)))
+    if newfig:
+        plt.figure()
+    avg_delay = np.array([np.mean([d.mean(0) for d in dg], 0) for dg in delays_list])
+    if std == False:
+        std_delay = np.zeros_like(avg_delay)
+    else:
+        std_delay = np.array([np.std([d.mean(0) for d in dg], 0) for dg in delays_list])
+    # asert avg_delay.shape == (len(delays_list), 3)
+    x = np.arange(len(select_idx))
+    bottom = np.zeros(len(select_idx))
+    for i in range(3):
+        plt.bar(x, avg_delay[select_idx,i], width, yerr=std_delay[select_idx,i],
+                bottom=bottom)
+        bottom += avg_delay[select_idx,i]
+    plt.xticks(x, [xticks[i] for i in select_idx])
+    plt.ylim((0, None))
+    plt.ylabel('latency (s)')
+    plt.legend(['queuing', 'processing', 'committing'], loc=loc)
     plt.tight_layout()
 
 def show_delay_overtime(delays, workload, rsl_list, each_rsl=False, newfig=True):
@@ -498,13 +609,15 @@ def show_delay_overtime(delays, workload, rsl_list, each_rsl=False, newfig=True)
 
 def show_delay_overtime_cmp(delays_list, workload, rsl_list,
                             legends=None, select_idx=None, newfig=True):
+    lines = ["-","--","-.",":"]
+    linecycler = itertools.cycle(lines)
     if newfig:
         plt.figure()
     if select_idx is None:
         select_idx = list(range(len(delays_list)))
     for i in select_idx:
         _, dot_avg = analyze_delay_overtime(delays_list[i], workload, rsl_list)
-        plt.plot(util.moving_average(dot_avg, 10))
+        plt.plot(util.moving_average(dot_avg, 10), next(linecycler))
     if legends:
         plt.legend([legends[i] for i in select_idx])
     plt.ylim((0,None))
@@ -594,8 +707,8 @@ def __test__():
     
     loads, rest_load, delays, details = simulate_process(tasks, nfbefore[:,-1], fh, nlength, speed_factor)
     
-    methods = ['fcfs', 'sjfs', 'min-delay', 'max-delay', 'bpt', 'bwt']
-    legends = ['FCFS', 'SJFS', 'SLFS', 'LLFS', 'BPTS', 'BWTS']
+    methods = ['fcfs', 'sjfs', 'min-delay', 'max-delay', 'bpt', 'bwt', 'ratio-wp', 'ratio-pw']
+    legends = ['FCFS', 'SJFS', 'SLFS', 'LLFS', 'BPTS', 'BWTS', 'MUFS', 'MUFS']
     bss = [1,2,4,8]
     
     loads8 = np.zeros((len(methods), nlength))
@@ -686,13 +799,18 @@ def __test_lcr__():
     tasks, nfbefore = workload_to_tasks(w, rsl_list, 30)
     csegs, rsegs = generate_cr_segment(nsource, nlength, 30, 1, True, 0.05, nfbefore, (480,10), (480,10))
     
+    tasks_p, nfbefore_p = workload_to_periodic_profiling_tasks(w, 30, rsl_list, 30)
+    
     speed_factor = 11.5
     capacity = 1 * speed_factor
     
-    fh=FrameHolder(rsl_list, bs, 2, mat_pt, 'bpt')
+    fh=FrameHolder(rsl_list, bs, 1, mat_pt, 'ratio-wp')
+    loads_p, rload_p, delays_p, detail_p = simulate_process(tasks_p, nfbefore_p[:,-1], fh, nlength, speed_factor)
+    
+    fh=FrameHolder(rsl_list, bs, 2, mat_pt, 'ratio-wp')
     loads_l, rload_l, delays_l, detail_l = simulate_process(tasks, nfbefore[:,-1], fh, nlength, speed_factor)
     fh.clear()
-    loads_t, rload_t, delays_t, detail_t = simulate_process_with_cr(tasks, nfbefore[:,-1], csegs, rsegs, fh, nsource, nlength, speed_factor)
+    loads_t, rload_t, delays_t, detail_t = simulate_process_with_cr(tasks, nfbefore[:,-1], csegs, rsegs, fh, nlength, speed_factor)
     
     loads_l, r = LoadManager.SmoothLoad(loads_l, capacity)
     rload_l += r
@@ -715,6 +833,7 @@ def __test_lcr__():
     # delay - distribution    
     show_delay_distribution(delays_t)
     
+    show_delay_distribution_cmp([delays_p, delays_t], ['prf-period', 'prf-free+C+R'])
     show_delay_distribution_cmp([delays_l, delays_t], ['Live-only','L+C+R'])
     
     # delay - overtime
