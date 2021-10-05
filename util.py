@@ -136,12 +136,18 @@ def sample_data(data, period, slength, pos='tail'):
     return np.array(res)
 
 def sample_and_pad(data, period, slength=1, off=0, pos='middle', padvalue='same'):
+    '''
+    Returns padded data and indices of sampled points
+    '''
     assert pos in ['head', 'middle', 'tail']
     assert padvalue == 'same' or isinstance(padvalue, (int, float)) # np.nan is float
     vdata=sample_data(data[off:], period, slength, pos)
-    return pad_by_sample(vdata, len(data), period, slength, off,pos, padvalue)
+    return pad_by_sample(vdata, len(data), period, slength, off, pos, padvalue)
 
 def pad_by_sample(data, n, period, slength, off=0, pos='middle', padvalue='same'):
+    '''
+    Returns padded data and indices of sampled points
+    '''
     assert pos in ['head', 'middle', 'tail']
     assert padvalue == 'same' or isinstance(padvalue, (int, float)) # np.nan is float
     vidx=sample_index(n-off, period, slength, pos)+off
