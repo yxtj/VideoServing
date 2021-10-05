@@ -76,7 +76,7 @@ def __test__():
     
     import profiling
     vn_list = ['s3', 's4', 's5', 's7']
-    fps_list = [25,30,20,30]
+    vfps_list = [25,30,20,30]
     segment = 1
     
     ctss=[]; cass=[]; ccss=[]
@@ -145,7 +145,7 @@ def __test__():
     
     # workload comparison
     plt.figure()
-    plt.plot(live_time*WLF)
+    plt.plot(util.moving_average(live_time,5)*WLF)
     plt.plot(ct_t_pad*WLF)
     plt.plot(rf_t*WLF)
     plt.plot(total_t*WLF, '--')
@@ -166,12 +166,13 @@ def __test__():
     # ap_t and ap_pt are from "adaptation_expr.py"
     ap_t,ap_a,ap_s,ap_pt=adaptation_expr.adapt_profile(ctss[vidx],cass[vidx],[0.9,0.8,0.7,0.5],srate,1)
     plt.figure()
-    plt.plot((ap_t+ap_pt)*WLF) # profile
-    plt.plot(total_t*WLF)
+    plt.plot((util.moving_average(ap_t,5)+ap_pt)*WLF) # profile
+    plt.plot((util.moving_average(live_time,5)+ct_t_pad+rf_t)*WLF)
     plt.xlabel('time (s)')
     plt.ylabel('resource (GFLOP)')
-    plt.legend(['prf-online','prf-free+C+R'])
-    plt.ylim((-10,380))
+    plt.legend(['prf-period','prf-free+C+R'])
+    #plt.yscale('log')
+    plt.ylim((None,380))
     plt.tight_layout()
     
     # accuracy comparison
