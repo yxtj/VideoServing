@@ -21,35 +21,47 @@ def parse_pose(line):
     v: 0->fail, 1->estimate, 2->seen
     '''
     if len(line) == 0:
-        return []
+        return [], []
     poses = []
+    scores = []
     for m in re.findall('\[(.+?)\],(\d\.\d+?)', line):
-        if float(m[1]) >= 1.0:
+        s = float(m[1])
+        if s >= 1.0:
             line = m[0].split(', ')
             r = np.array(line, dtype=float).reshape(17,3)
             poses.append(r)
-    return np.array(poses)
+            scores.append(s)
+    return np.array(poses), np.array(scores)
 
 
 def read_data(fn):
     df = pd.read_csv(fn, sep='\t', usecols=['Estimation_result', 'Time_SPF'],
                      converters={'Estimation_result':str})
     r = df['Estimation_result']
-    t = df['Time_SPF'].to_numpy()
-    p = [ parse_pose(line) for line in r ]
-    return p, t
+    times = df['Time_SPF'].to_numpy()
+    poses = []
+    scores = []
+    for line in r:
+        p, s = parse_pose(line)
+        poses.append(p)
+        scores.append(s)
+    return times, poses, scores
 
 
 def trans_folder(folder):
     print(folder)
     poses = []
     times = []
+    scores = []
     for fn,h in zip(FN_LIST, RS_LIST):
         print(fn)
-        p, t = read_data(folder+'/'+fn+'.tsv')
+        t, p, s = read_data(folder+'/'+fn+'.tsv')
         poses.append(p)
         times.append(t)
-        np.savez(folder+'/raw-%d' % h, height=h, times=t, poses=np.array(p,dtype=object))
+        scores.append(s)
+        np.savez(folder+'/raw-%d' % h, height=h, times=t,
+                 poses=np.array(p,dtype=object),
+                 scores=np.array(s,dtype=object))
     #poses = np.array(poses, dtype=object)
     #times = np.array(times)
     #np.savez(folder+'/raw-all', heights=RS_LIST, times=times, poses=poses)
