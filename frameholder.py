@@ -2,7 +2,7 @@
 
 import numpy as np
 import time
-from collections import namedtuple
+from collections import namedtuple, defaultdict
 from threading import Lock
 
 #Configure = namedtuple('Configure', ['rs', 'fr', 'roi', 'model'])
@@ -13,24 +13,24 @@ class FrameQueue():
         self.lock = Lock()
         self.queue = []
         self.info = []
-    
+
     def size(self):
         return len(self.queue)
-    
+
     def empty(self):
         return len(self.queue) == 0
-    
+
     def clear(self):
         with self.lock:
             self.queue = []
             self.info = []
-    
+
     def put(self, frame:np.ndarray, info:FrameInfo):
         with self.lock:
             self.queue.append(frame)
             self.info.append(info)
         return len(self.queue)
-        
+
     def get(self, n):
         res_f = None
         res_i = None
@@ -41,7 +41,7 @@ class FrameQueue():
                 del self.queue[:n]
                 del self.info[:n]
         return res_f, res_i
-    
+
     def get_all(self):
         res_f = None
         res_i = None
@@ -52,7 +52,16 @@ class FrameQueue():
                 self.queue = []
                 self.info = []
         return res_f, res_i
-    
+
+    def fetch(self, n):
+        res_f = None
+        res_i = None
+        if len(self.queue) > 0:
+            with self.lock:
+                res_f = self.queue[:n]
+                res_i = self.info[:n]
+        return res_f, res_i
+
     def wait_time(self, now):
         if len(self.info) == 0:
             return 0.0
@@ -62,9 +71,9 @@ class FrameQueue():
 # next: add queues for different models
 
 class FrameHolder():
-    
+
     def __init__(self, rsl_list, bs:int, levels:int, mat_pt:np.ndarray,
-                 policy='come', **kwargs):
+                 policy='fcfs', **kwargs):
         self.rsl_list = rsl_list
         self.rsl_index = { rs:i for i,rs in enumerate(rsl_list) }
         self.nrsl = len(rsl_list)
@@ -72,26 +81,28 @@ class FrameHolder():
         self.batchsize = bs
         assert 0 <= levels
         self.levels = levels
-        
+
         self.queues = [[ FrameQueue() for _ in range(self.nrsl) ] for _ in range(levels)]
-        
+
         self.process_time = mat_pt
         if mat_pt is not None:
             assert mat_pt.ndim == 2 and mat_pt.shape[0] == len(rsl_list)
             self.max_pbs = mat_pt.shape[1]
             assert self.max_pbs >= bs
-        
+
         # assert m in ['come', 'small', 'finish', 'delay', 'priority', 'awt']
         self.set_ready_method(policy, **kwargs)
         self.tid_lock = Lock()
         self.tid = 0 # internal task id
-        
-    
+        self.stream_tids = defaultdict(set)
+
+
     def clear(self):
         for qs in self.queues:
             for q in qs:
                 q.clear()
         self.tid = 0
+        self.stream_tids = defaultdict(set)
 
     def put(self, frame:np.ndarray, level:int,
             jobID:int, stmID:int, frmID:int, rs:int, t:float=None):
@@ -107,8 +118,9 @@ class FrameHolder():
             self.tid += 1
         info = FrameInfo(tid, jobID, stmID, frmID, t)
         q = self.queues[level][rs_ind]
+        self.stream_tids[stmID].add(tid)
         return q.put(frame, info)
-    
+
     def empty(self, level=None, rs=None):
         if level is None:
             np.all([ self.empty(rs,i) for i in range(self.levels) ])
@@ -120,15 +132,16 @@ class FrameHolder():
             else:
                 rs_ind = self.rsl_index[rs]
                 return len(qs[rs_ind]) == 0
-    
+
     def estimate_processing_time(self, rs, n):
         ind = self.rsl_index[rs]
         return self.process_time[ind][min(n, self.max_pbs)-1]*n
-    
+
     def set_ready_method(self, m, **kwargs):
         m = m.lower()
         assert m in ['fcfs', 'sjfs', 'min-delay', 'max-delay',
-                     'bpt', 'bwt', 'awt', 'ratio-wp', 'ratio-pw']
+                     'bpt', 'bwt', 'awt', 'c-wp',
+                     'ratio-wp', 'ratio-pw', 'ratio-lwp']
         self.policy = m
         if m == 'fcfs':
             self.ready = lambda now: self.ready_come_first()
@@ -146,6 +159,8 @@ class FrameHolder():
             self.ready_param = {'alpha':float(kwargs['param_alpha'])}
             # wait_time + alpha/process_time -> max
             self.ready = self.ready_balanced_wait
+        elif m == 'c-wp':
+            self.ready = self.ready_critical_wp
         elif m == 'ratio-wp':
             self.ready = self.ready_ratio_wp
         elif m == 'ratio-pw':
@@ -153,9 +168,11 @@ class FrameHolder():
         elif m == 'awt':
             # average waiting time
             self.ready = self.ready_awt
-    
+        elif m == 'ratio-lwp':
+            self.ready = self.ready_ratio_lwp
+
     # info query functions
-    
+
     def query_queue_length(self, level=None, rs=None):
         if level is None:
             res = [self.query_queue_length(i, rs) for i in range(self.levels)]
@@ -168,7 +185,7 @@ class FrameHolder():
             else:
                 rs_ind = self.rsl_index[rs]
                 return qs[rs_ind].size()
-            
+
 
     def query_queue_length_as_mat(self):
         l = np.zeros((self.levels, self.nrsl), int)
@@ -176,7 +193,7 @@ class FrameHolder():
             for j in range(self.nrsl):
                 l[i][j] = self.queues[i][j].size()
         return l
-    
+
     def query_waiting_time(self, level=None, rs=None, now=None):
         if now is None:
             now = time.time()
@@ -190,7 +207,7 @@ class FrameHolder():
             else:
                 rs_ind = self.rsl_index[rs]
                 return qs[rs_ind].wait_time(now)
-    
+
     def query_waiting_time_as_mat(self, now=None):
         if now is None:
             now = time.time()
@@ -199,9 +216,9 @@ class FrameHolder():
             for j in range(self.nrsl):
                 l[i][j] = self.queues[i][j].wait_time(now)
         return l
-    
+
     # find ready queue
-        
+
     def ready_come_first(self):
         def pick_by_inqueue_time(queues, ql_min):
             t = [q.info[0].time if q.size()>=ql_min else np.inf for q in queues]
@@ -221,7 +238,7 @@ class FrameHolder():
         if len(bf) != 0:
             return bf[0]
         return None, None
-    
+
     def ready_small_first(self):
         bf = []
         for lvl in range(self.levels):
@@ -235,9 +252,9 @@ class FrameHolder():
         if len(bf) != 0:
             return bf[0]
         return None, None
-   
+
     def ready_min_delay_first(self, now=None):
-        def fun(n, wt, pt):
+        def fun(wt, pt, q, bs):
             return wt+pt
         if now is None:
             now = time.time()
@@ -255,7 +272,7 @@ class FrameHolder():
         return None, None
 
     def ready_max_delay_first(self, now=None):
-        def fun(n, wt, pt):
+        def fun(wt, pt, q, bs):
             return wt+pt
         if now is None:
             now = time.time()
@@ -271,10 +288,10 @@ class FrameHolder():
         if len(bf) != 0:
             return bf[0]
         return None, None
-    
+
     def ready_balanced_process(self, now=None):
         alpha = self.ready_param['alpha']
-        def fun(n, wt, pt):
+        def fun(wt, pt, q, bs):
             return alpha/(wt+1) + pt
         if now is None:
             now = time.time()
@@ -290,10 +307,10 @@ class FrameHolder():
         if len(bf) != 0:
             return bf[0]
         return None, None
-    
+
     def ready_balanced_wait(self, now=None):
         alpha = self.ready_param['alpha']
-        def fun(n, wt, pt):
+        def fun(wt, pt, q, bs):
             return wt + alpha/pt
         if now is None:
             now = time.time()
@@ -309,9 +326,9 @@ class FrameHolder():
         if len(bf) != 0:
             return bf[0]
         return None, None
-    
+
     def ready_ratio_pw(self, now=None):
-        def fun(n, wt, pt):
+        def fun(wt, pt, q, bs):
             return pt/(1+wt)
         if now is None:
             now = time.time()
@@ -327,9 +344,35 @@ class FrameHolder():
         if len(bf) != 0:
             return bf[0]
         return None, None
-    
+
+    def ready_critical_wp(self, now=None):
+        #stm_min_tid = dict(map(lambda x:(x[0],min(x[1])), self.stream_tids.items()))
+        stm_min_tid = { sid:min(tids) for sid, tids in self.stream_tids.items()
+                       if len(tids)!=0 }
+        #for sid, tids in self.stream_tids.items():
+        #    if len(tids) != 0:
+        #        stm_min_tid[sid] = min(tids)
+        def fun(wt, pt, q, bs):
+            binfo = q.info[:bs]
+            c = len(list(filter(lambda x:x.tid == stm_min_tid[x.sid], binfo)))
+            return wt/pt*c
+        if now is None:
+            now = time.time()
+        bf = []
+        for lvl in range(self.levels):
+            ind = self.pick_with_score(lvl, now, fun, self.batchsize, True)
+            if ind is not None:
+                return lvl, self.rsl_list[ind]
+            # no queue contains a full batch
+            ind = self.pick_with_score(lvl, now, fun, 1, True)
+            if ind is not None:
+                bf.append((lvl, self.rsl_list[ind]))
+        if len(bf) != 0:
+            return bf[0]
+        return None, None
+
     def ready_ratio_wp(self, now=None):
-        def fun(n, wt, pt):
+        def fun(wt, pt, q, bs):
             return wt/pt
         if now is None:
             now = time.time()
@@ -345,7 +388,7 @@ class FrameHolder():
         if len(bf) != 0:
             return bf[0]
         return None, None
-    
+
     def ready_awt(self, now=None):
         if now is None:
             now = time.time()
@@ -364,18 +407,44 @@ class FrameHolder():
             return bf[0]
         return None, None
 
+    def ready_ratio_lwp(self, now=None):
+        def fun(wt, pt, q, bs):
+            return q.size()*wt/pt
+        if now is None:
+            now = time.time()
+        bf = []
+        for lvl in range(self.levels):
+            ind = self.pick_with_score(lvl, now, fun, self.batchsize, True)
+            if ind is not None:
+                return lvl, self.rsl_list[ind]
+            # no queue contains a full batch
+            ind = self.pick_with_score(lvl, now, fun, 1, True)
+            if ind is not None:
+                bf.append((lvl, self.rsl_list[ind]))
+        if len(bf) != 0:
+            return bf[0]
+        return None, None
+
     # data get functions
-    
+
     def get_batch(self, level, rs):
         ind = self.rsl_index[rs]
-        return self.queues[level][ind].get(self.batchsize)
-    
+        batch, info = self.queues[level][ind].get(self.batchsize)
+        if info is not None:
+            for i in info:
+                self.stream_tids[i.sid].remove(i.tid)
+        return batch, info
+
     def get_queue(self, level, rs):
         ind = self.rsl_index[rs]
-        return self.queues[level][ind].get_all()
-    
+        batch, info = self.queues[level][ind].get_all()
+        if info is not None:
+            for i in info:
+                self.stream_tids[i.sid].remove(i.tid)
+        return batch, info
+
     # -- helper functions --
-    
+
     def pick_with_score(self, level, now, fun, ql_min, pick_max=True):
         indices, scores = self.__queue_summary__(level, now, fun, ql_min)
         if len(indices) == 0:
@@ -385,7 +454,7 @@ class FrameHolder():
         else:
             ind = np.argmin(scores)
         return indices[ind]
-    
+
     def estimate_delay(self, level, rs, now):
         ind = self.rsl_index(rs)
         q = self.queues[level][ind]
@@ -396,13 +465,13 @@ class FrameHolder():
         else:
             etd = 0.0
         return etd
-    
+
     def summary_delay(self, level, now, ql_min=1):
-        fun = lambda n, wt, pt: wt+pt
+        fun = lambda wt, pt, q, bs: wt+pt
         return self.__queue_summary__(level, now, fun, ql_min)
-   
+
     # -- inner functions --
-    
+
     def __waiting_time_queue__(self, level, now, pad=np.nan, ql_min=1):
         wt = np.zeros(self.nrsl) + pad
         qs = self.queues[level]
@@ -411,7 +480,7 @@ class FrameHolder():
             if n >= ql_min:
                 wt[i] = q.wait_time(now)
         return wt
-    
+
     def __process_time_queue__(self, level, now, pad=np.nan, ql_min=1):
         pt = np.zeros(self.nrsl) + pad
         qs = self.queues[level]
@@ -420,10 +489,11 @@ class FrameHolder():
             if n >= ql_min:
                 pt[i] = self.process_time[i][min(n, self.batchsize-1)]*n
         return pt
-    
+
     def __queue_summary__(self, level, now, fun, ql_min=1):
         '''
-        fun: a function of (nframes, wait_time, process_time), returns a score
+        fun: a function of (wait_time, process_time, queue, batch_size),
+          returns a score
         '''
         indices = []
         values = []
@@ -432,20 +502,22 @@ class FrameHolder():
             n = q.size()
             if n >= ql_min:
                 wait_time = q.wait_time(now)
-                process_time = self.process_time[i][min(n, self.batchsize-1)]*n
-                v = fun(n, wait_time, process_time)
+                bs = min(n, self.batchsize)
+                process_time = self.process_time[i][bs-1]*n
+                v = fun(wait_time, process_time, q, bs)
                 indices.append(i)
                 values.append(v)
         return indices, values
-    
+
     def __queue_summary_general__(self, level, now, fun):
         values = []
         qs = self.queues[level]
         for i, q in enumerate(qs):
             n = q.size()
             wait_time = q.wait_time(now)
-            process_time = self.process_time[i][min(n, self.batchsize-1)]*n
-            v = fun(n, wait_time, process_time)
+            bs = min(n, self.batchsize)
+            process_time = self.process_time[i][bs-1]*n
+            v = fun(wait_time, process_time, q, bs)
             values.append(v)
         return values
 
@@ -456,12 +528,12 @@ def __test__():
     rsl_list=[240,360,480,720]
     bs=5
     mat_pt = np.exp(-np.array([1,1.5,2,2.5,3]))+np.array([1,2,3,4]).reshape(4,1)
-    
+
     mat_pt=np.array([[52,37,28,25,22,27,25,24],
         [98,70,61,60,59,60,60,59],
         [154,131,110,115,110,105,101,96],
         [358,271,226,210,211,212,208,204]])*0.001
-    
+
     fh=FrameHolder(rsl_list,bs,2,mat_pt,'finish')
     for i in range(5):
         rs = 480
@@ -479,12 +551,12 @@ def __test__():
     print(fh.query_queue_length_as_mat())
     print(fh.query_queue_length(level=0))
     print(fh.query_queue_length(rs=240))
-    
+
     print('wait time')
     print(fh.query_waiting_time())
     print(fh.query_waiting_time_as_mat())
     print(fh.query_waiting_time(1, 360))
-    
+
     print('go')
     while rdy := fh.ready(time.time()):
         rdy_lvl, rdy_rs = rdy
@@ -495,4 +567,3 @@ def __test__():
         d_frm, d_info = fh.get_batch(rdy_lvl, rdy_rs)
         print(rdy_lvl, rdy_rs, rsl_list.index(rdy_rs), len(d_frm))
         print(ql, wt)
-    
