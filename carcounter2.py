@@ -315,6 +315,8 @@ class CarCounter():
         times = np.zeros(n_second, float)
         counts = np.zeros(n_second, int)
         confs = np.zeros((n_second, 2), int)
+        if self.feat_gen is not None:
+            feats = np.zeros((n_second, self.feat_gen.dim_feat), float)
         for i in range(start_second, start_second+n_second):
             self.sidx = i
             cnt, t = self.process_one_second(self.rs, self.fr, False)
@@ -323,20 +325,24 @@ class CarCounter():
                 tt = time.time()
                 self.feat_gen.move((self.rs, self.fr))
                 t += time.time() - tt
+                feature = self.feat_gen.get()
+                feats[i] = feature
             if self.cmodel is not None:
                 # predict next configuration
                 tt = time.time()
-                feature = self.feat_gen.get()
-                #rs, fr = self.cmodel(feature)
-                rs, fr, mi = self.cmodel(feature)
+                rs, fr = self.cmodel(feature)
+                #rs, fr, mi = self.cmodel(feature)
                 self.rs = rs
                 self.fr = fr
-                self.mi = mi
+                #self.mi = mi
                 t += time.time() - tt
             times[i] = t
             counts[i] = cnt
             confs[i] = (self.rs, self.fr)
-        return times, counts, confs
+        if self.feat_gen is not None:
+            return times, counts, confs, feats
+        else:
+            return times, counts, confs
     
     def process_with_conf(self, conf_list):
         n_second = self.video.length_second(True)
@@ -511,7 +517,21 @@ class CarCounter():
         return times, accuracy
 
 # %% precomputed data io
+
+def save_precompute_data(file, rng_param, model_param, width, times, boxes):
+    np.savez(file, rng_param=np.array(rng_param,object), 
+             model_param=np.array(model_param, object),
+             width=width, times=times, boxes=np.array(boxes, object))
     
+def load_precompute_data(file):
+    with np.load(file, allow_pickle=True) as data:
+        rng_param = data['rng_param'].tolist()
+        model_param = data['model_param'].tolist()
+        width = data['width'].item()
+        times = data['times']
+        boxes = data['boxes'].tolist()
+        return rng_param, model_param, width, times, boxes
+
 def save_precompute_data_diff(file, rng_param, model_param, fpp_param,
                               width, fr, times, boxes, rects, mask_size):
     np.savez(file, rng_param=np.array(rng_param,object), 
