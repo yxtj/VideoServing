@@ -9,7 +9,6 @@ import matplotlib.pyplot as plt
 import videoholder
 #import operation
 
-import carcounter
 
 
 # %% configures
@@ -27,6 +26,7 @@ def generate_conf(cc, video, pbox_files, ground_truth,
     if isinstance(ground_truth, str):
         ground_truth = np.loadtxt(ground_truth, int, delimiter=',')
     assert isinstance(ground_truth, np.ndarray)
+    import carcounter
     
     cc.video=video
     fps = int(np.ceil(video.fps))
@@ -326,12 +326,13 @@ def show_delay_usage(loads, delay, usage, bound,
     elif isinstance(legend, (list, np.ndarray)):
         plt.legend(legend)
     plt.tight_layout()
-    
+
 
 # %% test
 
 def __test_show_profile__():
     import detect.yolowrapper as yolowrapper
+    import carcounter
     
     v1=videoholder.VideoHolder('E:/Data/video/s3.mp4')
     rng=carcounter.RangeChecker('h',0.5,0.1,0.08)
@@ -617,4 +618,5 @@ def __test_show_profile__():
             # legend outside lower
             plt.legend(['actual','certify'],ncol=2,loc='upper left',bbox_to_anchor=(0,-0.5))
     plt.tight_layout()
+    
     
