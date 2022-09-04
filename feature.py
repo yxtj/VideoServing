@@ -116,6 +116,13 @@ class FeatureExtractor():
     def get(self):
         return self.feature
     
+    def __pick_triu__(self, m):
+        #shape = m.shape
+        #assert shape[0] == shape[1]
+        idx = np.triu_indices_from(m, 1)
+        v = m[idx[0],idx[1]].ravel()
+        return v
+    
 # %% test
 
 def __test__():
