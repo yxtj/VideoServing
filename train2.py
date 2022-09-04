@@ -4,6 +4,7 @@ import numpy as np
 import os
 import re
 import torch
+import matplotlib.pyplot as plt
 
 from carcounter2 import load_precompute_data_diff
 from carcounter import load_precompute_data
@@ -264,6 +265,25 @@ def evaluate(x, y, model):
     ps = np.array([t.numpy() for t in ps], dtype=int).T
     return acc, (acc1, acc2), ps
 
+# %% visuallization
+
+def show_feat_conf(conf, feat, rsl_list, fps_list, featname=''):
+    if isinstance(rsl_list, list):
+        rsl_list = np.array(rsl_list)
+    if isinstance(fps_list, list):
+        fps_list = np.array(fps_list)
+    plt.figure()
+    plt.subplot(3,1,1)
+    plt.plot(feat,'r')
+    plt.ylabel(featname)
+    plt.subplot(3,1,2)
+    plt.plot(rsl_list[conf[:,0]],'b')
+    plt.ylabel('resolution\n(width)')
+    plt.subplot(3,1,3)
+    plt.plot(fps_list[conf[:,1]],'g')
+    plt.ylabel('frame\nrate')
+    plt.tight_layout()
+
 
 # %% test
 
@@ -326,6 +346,15 @@ def __test__():
     ttl = np.concatenate(ttl)
     tal = np.concatenate(tal)
     tfl = np.concatenate(tfl)
+
+
+    # show the correlation between feature and configuration
+    rsl_list=np.array([240,360,480,720])
+    fps_list=np.array([1,2,5,10,15,30])
+    feat_idx=10
+    show_feat_conf(t_conf, feat[0,4,:,feat_idx], rsl_list, fps_list[::-1], 'speed')
+    
+    
 
     # train model with generated data
     import model.framedecision
