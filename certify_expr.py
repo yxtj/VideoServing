@@ -71,7 +71,7 @@ def refine(low_result, low_time, high_result, high_time, refine_segments):
 # %% main script
 
 def __test__():
-    WLF = 4.4 # factor from time to gflops
+    WLF = 220 # factor from time to GFLOPS
     rsl_list=[240,360,480,720]
     
     import profiling
@@ -101,6 +101,18 @@ def __test__():
     live_acc = pick_by_conf(cass[vidx], pss[vidx])
     certify_count = ccss[vidx][2,2,:]
     certify_time = ctss[vidx][2,2,:]
+    
+    vn = 's5'
+    gt = np.loadtxt('data/%s/ground-truth-%s.txt'%(vn,vn), int, delimiter=',')
+    _,_,sg_list,cts,cas,ccs=profiling.load_configurations('data/%s/conf.npz' % (vn), 2)
+    sg_idx=sg_list.tolist().index(segment)
+    cts, cas, ccs = cts[sg_idx], cas[sg_idx], ccs[sg_idx]
+    pt,pa,ps=profiling.get_profile_bound_acc(cts,cas,0.9)
+    live_count = pick_by_conf(ccs, ps)
+    live_time = pick_by_conf(cts, ps)
+    live_acc = pick_by_conf(cas, ps)
+    certify_count = ccs[2,2,:]
+    certify_time = cts[2,2,:]
     
     srate=30
     
@@ -149,6 +161,7 @@ def __test__():
     plt.plot(ct_t_pad*WLF)
     plt.plot(rf_t*WLF)
     plt.plot(total_t*WLF, '--')
+    #plt.legend(['prf-free', 'certify', 'refine', 'total'])
     plt.legend(['live', 'certify', 'refine', 'total'])
     plt.xlabel('time (s)')
     plt.ylabel('resource (GFLOP)')
@@ -165,23 +178,28 @@ def __test__():
     import adaptation_expr
     # ap_t and ap_pt are from "adaptation_expr.py"
     ap_t,ap_a,ap_s,ap_pt=adaptation_expr.adapt_profile(ctss[vidx],cass[vidx],[0.9,0.8,0.7,0.5],srate,1)
+    
     plt.figure()
     plt.plot((util.moving_average(ap_t,5)+ap_pt)*WLF) # profile
     plt.plot((util.moving_average(live_time,5)+ct_t_pad+rf_t)*WLF)
     plt.xlabel('time (s)')
     plt.ylabel('resource (GFLOP)')
-    plt.legend(['prf-period','prf-free+C+R'])
+    plt.legend(['prf-based','prf-free+C+R'])
     #plt.yscale('log')
     plt.ylim((None,380))
     plt.tight_layout()
     
     # accuracy comparison
     plt.figure()
+    plt.plot(util.moving_average(ap_a, 10))
     plt.plot(util.moving_average(live_acc, 10))
     plt.plot(util.moving_average(rf_a, 10))
     plt.ylim((-0.05, 1.05))
-    plt.legend(['live', 'refine'])
-    plt.legend(['w/o refine', 'w/ refine'])
+    plt.xlabel('time (s)')
+    plt.ylabel('accuracy')
+    #plt.legend(['live only', 'live+refine'])
+    #plt.legend(['w/o refine', 'w/ refine'])
+    plt.legend(['prf-based','prf-free','prf-free+C+R'])
     plt.tight_layout()
     
     print('live=%.4f refine=%.4f gain=%.4f' % (live_acc.mean(), rf_a.mean(), rf_a.mean()-live_acc.mean()))

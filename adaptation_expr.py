@@ -5,6 +5,10 @@ import util
 
 # %% basic functions
 
+plt.rcParams["figure.figsize"]=(4,3)
+plt.rcParams["font.size"]=13
+plt.rcParams["font.family"]='monospace'
+
 #import profiling.load_configurations as load_configurations
 #import profiling.get_profile_bound_acc as get_profile_bound_acc
 
@@ -110,7 +114,8 @@ def adapt_profile(ptime, pacc, acc_bounds, pfl_period, pfl_length):
 # %% test
 
 def __test__():
-    WLF = 4.4 # factor from time to gflops
+    WLF = 4.4 # factor from time to GFLOPS
+    WLF = 220 # factor from time to GFLOPS
     
     vn_list = ['s3', 's4', 's5', 's7']
     segment = 1
@@ -141,8 +146,9 @@ def __test__():
     # no adaptation
     ptg = cts[0][3,0]
     pag = cas[0][3,0]
+    # profile-based adaptation (static)
     ao_t,ao_a,ao_s,ao_pt=adapt_profile(cts[0],cas[0],[0.9,0.8,0.7,0.5],len(ptg),30)
-    # profile-based adaptation
+    # profile-based adaptation (dynamic)
     ap_t,ap_a,ap_s,ap_pt=adapt_profile(cts[0],cas[0],[0.9,0.8,0.7,0.5],30,1)
     # profile-free adaptation
     pt,pa,ps=get_profile_bound_acc(cts[0],cas[0],0.9)
@@ -157,14 +163,14 @@ def __test__():
     plt.ylabel('resource (GFLOP)')
     #plt.ylabel('resource (s)')
     plt.legend(['no-adapt', 'prf-once','prf-period','prf-free'],ncol=2,fontsize=12,columnspacing=0.5)
-    plt.ylim((-10,380))
+    plt.yscale('log')
     plt.tight_layout()
     
     # zoomin comparison for workload
     plt.figure()
-    plt.plot(util.moving_average(ao_t,10)*WLF) # profile-once
+    plt.plot(util.moving_average(ao_t,5)*WLF) # profile-once
     plt.plot((util.moving_average(ap_t,5)+ap_pt)*WLF) # profile-period
-    plt.plot(util.moving_average(pt,10)*WLF) # predict
+    plt.plot(util.moving_average(pt,5)*WLF) # predict
     plt.xlabel('time (s)')
     plt.ylabel('resource (GFLOP)')
     #plt.ylabel('resource (s)')
